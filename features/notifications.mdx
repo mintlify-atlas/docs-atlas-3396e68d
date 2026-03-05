@@ -1,0 +1,340 @@
+---
+title: Notifications
+description: Real-time activity feed and notification system for households
+icon: bell
+---
+
+## Overview
+
+The Notifications system (`NotificacionesService` at `src/app/core/hogar/notificaciones/services/notificaciones.service.ts`) provides a real-time activity feed for household events, primarily tracking reward redemptions (canjes).
+
+## Notification Model
+
+Notifications are represented by the `NotificacionDTO` interface:
+
+```typescript
+export type NotificacionTipo = 'canje' | 'aceptada' | 'rechazo';
+
+export interface NotificacionDTO {
+  id?: string;
+  tipo: NotificacionTipo;
+  hogarId: string;
+  createdAt: any;           // Firestore timestamp
+  
+  actorUid: string;         // User who triggered the event
+  actorNombre: string;      // User's display name
+  
+  // For 'canje' (reward redemption) notifications:
+  recompensaId?: string;    // Reward ID
+  recompensaTitulo?: string;// Reward title
+  coste?: number;           // Points spent
+  
+  vistoPor?: Record<string, true>; // Map of UIDs who viewed this
+}
+```
+
+## Storage Structure
+
+Notifications are stored as a subcollection under each household:
+
+```
+hogares/
+  {hogarId}/
+    notificaciones/
+      {notificationId}
+```
+
+This structure ensures:
+- **Isolation**: Each household's notifications are separate
+- **Scalability**: No single collection grows indefinitely
+- **Cleanup**: Deleting a household automatically removes its notifications
+
+## Creating Reward Redemption Notifications
+
+When a user redeems a reward, a notification is created:
+
+```typescript
+crearNotificacionCanje(hogarId: string, payload: {
+  actorUid: string;
+  actorNombre: string;
+  recompensaId: string;
+  recompensaTitulo: string;
+  coste: number;
+}): Promise<void> {
+  const colRef = collection(this.firestore, `hogares/${hogarId}/notificaciones`);
+  return addDoc(colRef, {
+    tipo: 'canje',
+    hogarId,
+    createdAt: serverTimestamp(),
+    actorUid: payload.actorUid,
+    actorNombre: payload.actorNombre,
+    recompensaId: payload.recompensaId,
+    recompensaTitulo: payload.recompensaTitulo,
+    coste: payload.coste,
+    vistoPor: { [payload.actorUid]: true }
+  } as any).then(() => undefined);
+}
+```
+
+<Steps>
+  <Step title="Prepare Notification Data">
+    The notification includes all relevant information about the redemption:
+    - Who redeemed the reward (`actorUid`, `actorNombre`)
+    - What was redeemed (`recompensaId`, `recompensaTitulo`)
+    - How much it cost (`coste`)
+  </Step>
+  
+  <Step title="Initialize View Status">
+    The actor is automatically marked as having viewed their own notification:
+    
+    ```typescript
+    vistoPor: { [payload.actorUid]: true }
+    ```
+  </Step>
+  
+  <Step title="Add to Subcollection">
+    The notification is added to the household's notification subcollection with a server-generated timestamp.
+  </Step>
+</Steps>
+
+<Note>
+  The `vistoPor` map uses UIDs as keys, allowing efficient O(1) lookups to check if a user has seen a notification.
+</Note>
+
+## Querying Notifications
+
+### All Notifications Stream
+
+Get the 30 most recent notifications for a household:
+
+```typescript
+notificaciones$(hogarId: string): Observable<NotificacionDTO[]> {
+  const colRef = collection(this.firestore, `hogares/${hogarId}/notificaciones`);
+  const q = query(colRef, orderBy('createdAt', 'desc'), limit(30));
+  return collectionData(q, { idField: 'id' }) as any;
+}
+```
+
+This observable:
+- Orders by creation date (newest first)
+- Limits to 30 items for performance
+- Auto-updates when new notifications are added
+- Includes the document ID as the `id` field
+
+### Pending Notifications
+
+Get notifications a specific user hasn't seen:
+
+```typescript
+notificacionesPendientes$(hogarId: string, uid: string): Observable<NotificacionDTO[]> {
+  return this.notificaciones$(hogarId).pipe(
+    map(list => (list ?? []).filter(n => !n?.vistoPor?.[uid]))
+  );
+}
+```
+
+This filters the notification stream to show only unread items for the user.
+
+### Reward Redemptions Only
+
+Get all reward redemption notifications:
+
+```typescript
+canjes$(hogarId: string): Observable<NotificacionDTO[]> {
+  return this.notificaciones$(hogarId).pipe(
+    map(list => (list ?? []).filter(n => n.tipo === 'canje'))
+  );
+}
+```
+
+### Recent Redemptions
+
+Get the most recent reward redemptions (for activity feed):
+
+```typescript
+canjesRecientes$(hogarId: string, take: number = 6): Observable<NotificacionDTO[]> {
+  const colRef = collection(this.firestore, `hogares/${hogarId}/notificaciones`);
+  const q = query(
+    colRef,
+    where('tipo', '==', 'canje'),
+    orderBy('createdAt', 'desc'),
+    limit(take)
+  );
+  return collectionData(q, { idField: 'id' }) as any;
+}
+```
+
+<Note>
+  This query uses a compound index on `tipo` and `createdAt` for efficient filtering and sorting.
+</Note>
+
+### Redemption Count
+
+Get the total count of reward redemptions:
+
+```typescript
+canjesCount$(hogarId: string): Observable<number> {
+  const colRef = collection(this.firestore, `hogares/${hogarId}/notificaciones`);
+  const q = query(colRef, where('tipo', '==', 'canje'));
+  return from(getCountFromServer(q)).pipe(map(snap => snap.data().count));
+}
+```
+
+This uses Firestore's `getCountFromServer()` for efficient counting without downloading documents.
+
+### Full Redemption History
+
+Get up to 50 redemption events for history view:
+
+```typescript
+canjesHistorial$(hogarId: string, take: number = 50): Observable<NotificacionDTO[]> {
+  const colRef = collection(this.firestore, `hogares/${hogarId}/notificaciones`);
+  const q = query(
+    colRef,
+    where('tipo', '==', 'canje'),
+    orderBy('createdAt', 'desc'),
+    limit(take)
+  );
+  return collectionData(q, { idField: 'id' }) as any;
+}
+```
+
+## Marking Notifications as Viewed
+
+Users can mark individual notifications as viewed:
+
+```typescript
+marcarComoVista(hogarId: string, notiId: string, uid: string): Promise<void> {
+  const ref = doc(this.firestore, `hogares/${hogarId}/notificaciones/${notiId}`);
+  return updateDoc(ref, {
+    [`vistoPor.${uid}`]: true
+  });
+}
+```
+
+This uses Firestore's dot notation to update a specific key in the `vistoPor` map without overwriting other users' view status.
+
+<Accordion title="Example: Marking as Viewed">
+  Before:
+  ```json
+  {
+    "vistoPor": {
+      "user1": true,
+      "user2": true
+    }
+  }
+  ```
+  
+  After calling `marcarComoVista(hogarId, notiId, 'user3')`:
+  ```json
+  {
+    "vistoPor": {
+      "user1": true,
+      "user2": true,
+      "user3": true
+    }
+  }
+  ```
+</Accordion>
+
+## Notification Types
+
+While the model supports multiple notification types, the current implementation focuses on:
+
+<CardGroup cols={3}>
+  <Card title="canje" icon="gift">
+    **Reward Redemption**
+    
+    User spent points to redeem a reward
+  </Card>
+  
+  <Card title="aceptada" icon="check">
+    **Request Accepted**
+    
+    Task assignment request accepted (future use)
+  </Card>
+  
+  <Card title="rechazo" icon="xmark">
+    **Request Rejected**
+    
+    Task assignment request rejected (future use)
+  </Card>
+</CardGroup>
+
+<Note>
+  The `aceptada` and `rechazo` notification types are defined but not currently used. Task assignment notifications are handled through the `peticionesAsignacion` collection.
+</Note>
+
+## Real-Time Updates
+
+All notification queries return RxJS Observables that automatically update when:
+- New notifications are added
+- Notifications are modified (e.g., marked as viewed)
+- Notifications are deleted
+
+Components subscribing to these observables receive real-time updates without polling:
+
+```typescript
+this.notificacionesService.notificacionesPendientes$(hogarId, uid)
+  .subscribe(pendientes => {
+    console.log(`You have ${pendientes.length} unread notifications`);
+  });
+```
+
+## Performance Considerations
+
+<CardGroup cols={2}>
+  <Card title="Pagination" icon="list">
+    Queries are limited to 6-50 items to prevent large data transfers
+  </Card>
+  
+  <Card title="Indexes" icon="database">
+    Compound indexes on `tipo` + `createdAt` enable fast filtered queries
+  </Card>
+  
+  <Card title="Subcollections" icon="folder-tree">
+    Per-household subcollections prevent unlimited collection growth
+  </Card>
+  
+  <Card title="Count Aggregation" icon="hashtag">
+    Server-side counting avoids downloading documents for counts
+  </Card>
+</CardGroup>
+
+## Integration with Rewards System
+
+When a user redeems a reward in the `TiendaService`:
+
+```typescript
+// In TiendaService.canjearRecompensa()
+await this.notificacionesService.crearNotificacionCanje(hogarId, {
+  actorUid: usuarioId,
+  actorNombre: usuario.nombre,
+  recompensaId: recompensa.id,
+  recompensaTitulo: recompensa.titulo,
+  coste: puntosGastados
+});
+```
+
+This creates a visible activity feed showing all household members' redemptions.
+
+## Cleanup on Household Deletion
+
+When a household is deleted, the notification subcollection is cleaned up:
+
+```typescript
+// In HogarService.eliminarHogar()
+await this.deleteSubcollection(`hogares/${hogarId}/notificaciones`);
+```
+
+This removes all notifications in batches to avoid timeout issues with large collections.
+
+## Future Enhancements
+
+The notification system is designed to support:
+- **Task completion notifications**: Notify when tasks are completed
+- **Assignment request notifications**: Real-time alerts for petition acceptance/rejection
+- **Achievement notifications**: Celebrate milestones and accomplishments
+- **Admin announcements**: Household-wide messages from administrators
+
+The extensible `tipo` field and flexible model make these additions straightforward.

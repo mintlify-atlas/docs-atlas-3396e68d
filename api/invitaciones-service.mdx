@@ -1,0 +1,475 @@
+---
+title: 'InvitacionesService'
+description: 'Manages home invitation codes for adding new members'
+icon: 'envelope'
+---
+
+## Overview
+
+The `InvitacionesService` handles the creation and validation of invitation codes that allow users to join existing homes. It ensures that invitations are email-specific and can only be used once.
+
+**Location**: `src/app/core/invitaciones/services/invitaciones.service.ts`
+
+**Injectable**: `{ providedIn: 'root' }`
+
+---
+
+## Methods
+
+### crearInvitacion()
+
+<ParamField path="crearInvitacion(hogarId, email)" type="Promise<string>">
+  Creates a new invitation code for a specific email address to join a home.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home to invite user to
+  </ResponseField>
+  <ResponseField name="email" type="string" required>
+    Email address of the invited user (case-insensitive, stored as lowercase)
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Promise<string>` - The generated 8-character invitation code
+
+**Behavior**:
+- Generates unique 8-character code using UUID
+- Stores invitation in `invitaciones/{codigo}` collection
+- Sets `usado: false` initially
+- Records creation timestamp
+
+**Example**:
+```typescript
+import { InvitacionesService } from '@core/invitaciones/services/invitaciones.service';
+
+@Component({ ... })
+export class InviteComponent {
+  constructor(private invitacionesService: InvitacionesService) {}
+
+  async inviteUser() {
+    const codigo = await this.invitacionesService.crearInvitacion(
+      'home-123',
+      'friend@example.com'
+    );
+    
+    console.log('Invitation code:', codigo);
+    
+    // Share code with user via email or other means
+    this.shareCode(codigo);
+  }
+  
+  shareCode(codigo: string) {
+    const inviteUrl = `https://zenhogar.app/join?code=${codigo}`;
+    navigator.clipboard.writeText(inviteUrl);
+    alert('Invitation link copied to clipboard!');
+  }
+}
+```
+
+---
+
+### validarCodigo()
+
+<ParamField path="validarCodigo(codigo)" type="Promise<Invitacion | null>">
+  Validates an invitation code for the current authenticated user.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="codigo" type="string" required>
+    The invitation code to validate (case-insensitive, whitespace trimmed)
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Promise<Invitacion | null>`
+- Returns `Invitacion` object if valid
+- Returns `null` if:
+  - Code doesn't exist
+  - Code already used
+  - Current user's email doesn't match invitation email
+
+**Throws**:
+- `'Tu cuenta no tiene email'`: Current user has no email address
+
+**Example**:
+```typescript
+async checkInvitation(code: string) {
+  try {
+    const invitacion = await this.invitacionesService.validarCodigo(code);
+    
+    if (invitacion) {
+      console.log('Valid invitation for home:', invitacion.hogarId);
+      return true;
+    } else {
+      console.log('Invalid or already used code');
+      return false;
+    }
+  } catch (error) {
+    console.error('Validation failed:', error.message);
+    return false;
+  }
+}
+```
+
+---
+
+### aceptarCodigo()
+
+<ParamField path="aceptarCodigo(codigo)" type="Promise<void>">
+  Accepts an invitation code and adds the current user to the home.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="codigo" type="string" required>
+    The invitation code to accept (case-insensitive, whitespace trimmed)
+  </ResponseField>
+</Expandable>
+
+**Throws**:
+- `'Debes iniciar sesión'`: No authenticated user
+- `'Tu cuenta no tiene email'`: User has no email
+- `'Código inválido o ya usado'`: Code validation failed
+- `'Ya perteneces a un hogar'`: User already belongs to a home
+
+**Side Effects** (executed in a transaction):
+1. Validates the invitation code
+2. Checks user doesn't already belong to a home
+3. Adds member entry to `hogares/{hogarId}/miembros/{uid}`
+4. Marks invitation as used in `invitaciones/{codigo}`
+5. Updates user's `hogarId` in `usuarios/{uid}`
+6. Adds user to home's `miembros` array in `hogares/{hogarId}`
+7. Initializes `totalTareasRealizadasHogar: 0` for new member
+
+**Example**:
+```typescript
+import { Component, OnInit } from '@angular/core';
+import { ActivatedRoute, Router } from '@angular/router';
+import { InvitacionesService } from '@core/invitaciones/services/invitaciones.service';
+
+@Component({
+  selector: 'app-join-home',
+  template: `
+    <div class="join-container">
+      <h2>Join Home</h2>
+      
+      <input 
+        [(ngModel)]="inviteCode" 
+        placeholder="Enter invitation code"
+        (input)="inviteCode = inviteCode.toUpperCase()"
+      >
+      
+      <button 
+        (click)="acceptInvitation()" 
+        [disabled]="!inviteCode || loading">
+        {{ loading ? 'Joining...' : 'Join Home' }}
+      </button>
+      
+      <p *ngIf="error" class="error">{{ error }}</p>
+    </div>
+  `
+})
+export class JoinHomeComponent implements OnInit {
+  inviteCode = '';
+  loading = false;
+  error = '';
+
+  constructor(
+    private invitacionesService: InvitacionesService,
+    private route: ActivatedRoute,
+    private router: Router
+  ) {}
+
+  ngOnInit() {
+    // Check for code in URL query params
+    this.route.queryParams.subscribe(params => {
+      if (params['code']) {
+        this.inviteCode = params['code'].toUpperCase();
+      }
+    });
+  }
+
+  async acceptInvitation() {
+    this.loading = true;
+    this.error = '';
+    
+    try {
+      // First validate the code
+      const valid = await this.invitacionesService.validarCodigo(
+        this.inviteCode
+      );
+      
+      if (!valid) {
+        this.error = 'Invalid or expired invitation code';
+        return;
+      }
+      
+      // Accept the invitation
+      await this.invitacionesService.aceptarCodigo(this.inviteCode);
+      
+      // Navigate to home dashboard
+      this.router.navigate(['/home']);
+      
+    } catch (error: any) {
+      if (error.message === 'Ya perteneces a un hogar') {
+        this.error = 'You already belong to a home. Leave your current home first.';
+      } else if (error.message === 'Debes iniciar sesión') {
+        this.error = 'Please sign in to accept the invitation';
+        this.router.navigate(['/login'], {
+          queryParams: { returnUrl: `/join?code=${this.inviteCode}` }
+        });
+      } else {
+        this.error = 'Failed to join home. Please try again.';
+      }
+      
+      console.error('Error accepting invitation:', error);
+      
+    } finally {
+      this.loading = false;
+    }
+  }
+}
+```
+
+---
+
+## Complete Flow Example
+
+### Admin Creates Invitation
+
+```typescript
+import { Component } from '@angular/core';
+import { InvitacionesService } from '@core/invitaciones/services/invitaciones.service';
+import { HogarService } from '@core/hogar/services/hogar.service';
+
+@Component({
+  selector: 'app-invite-member',
+  template: `
+    <div class="invite-panel">
+      <h3>Invite New Member</h3>
+      
+      <input 
+        type="email" 
+        [(ngModel)]="email" 
+        placeholder="friend@example.com"
+      >
+      
+      <button (click)="createInvite()" [disabled]="!isValidEmail()">
+        Generate Invitation
+      </button>
+      
+      <div *ngIf="invitationCode" class="success">
+        <h4>Invitation Created!</h4>
+        <p>Code: <strong>{{ invitationCode }}</strong></p>
+        <p>Share this link:</p>
+        <input 
+          [value]="inviteUrl" 
+          readonly 
+          (click)="copyToClipboard()"
+        >
+        <button (click)="copyToClipboard()">Copy Link</button>
+      </div>
+    </div>
+  `
+})
+export class InviteMemberComponent {
+  email = '';
+  invitationCode = '';
+  hogarId = '';
+  
+  constructor(
+    private invitacionesService: InvitacionesService,
+    private hogarService: HogarService
+  ) {
+    // Get current home ID
+    this.hogarService.getHogar$().subscribe(hogar => {
+      if (hogar) this.hogarId = hogar.id!;
+    });
+  }
+  
+  get inviteUrl(): string {
+    return `https://zenhogar.app/join?code=${this.invitationCode}`;
+  }
+  
+  isValidEmail(): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(this.email);
+  }
+  
+  async createInvite() {
+    try {
+      this.invitationCode = await this.invitacionesService.crearInvitacion(
+        this.hogarId,
+        this.email.toLowerCase()
+      );
+      
+      console.log('Invitation created:', this.invitationCode);
+      
+      // Optionally send email via backend
+      // await this.emailService.sendInvitation(this.email, this.inviteUrl);
+      
+    } catch (error) {
+      console.error('Failed to create invitation:', error);
+      alert('Failed to create invitation');
+    }
+  }
+  
+  copyToClipboard() {
+    navigator.clipboard.writeText(this.inviteUrl);
+    alert('Invitation link copied!');
+  }
+}
+```
+
+### User Accepts Invitation
+
+```typescript
+import { Component, OnInit } from '@angular/core';
+import { Router } from '@angular/router';
+import { InvitacionesService } from '@core/invitaciones/services/invitaciones.service';
+import { AuthService } from '@core/auth/auth.service';
+
+@Component({
+  selector: 'app-accept-invite',
+  template: `
+    <div *ngIf="!authenticated">
+      <h2>Sign in to join</h2>
+      <button (click)="signIn()">Sign in with Google</button>
+    </div>
+    
+    <div *ngIf="authenticated && !accepted">
+      <h2>You've been invited!</h2>
+      <p>{{ inviteEmail }} has invited you to join their home.</p>
+      <button (click)="accept()" [disabled]="processing">
+        {{ processing ? 'Joining...' : 'Accept Invitation' }}
+      </button>
+    </div>
+    
+    <div *ngIf="accepted">
+      <h2>Welcome!</h2>
+      <p>You've successfully joined the home.</p>
+      <button routerLink="/home">Go to Dashboard</button>
+    </div>
+  `
+})
+export class AcceptInviteComponent implements OnInit {
+  code = '';
+  authenticated = false;
+  accepted = false;
+  processing = false;
+  inviteEmail = '';
+  
+  constructor(
+    private invitacionesService: InvitacionesService,
+    private authService: AuthService,
+    private router: Router
+  ) {}
+  
+  ngOnInit() {
+    // Get code from URL
+    const params = new URLSearchParams(window.location.search);
+    this.code = params.get('code') || '';
+    
+    // Check authentication
+    this.authService.user$.subscribe(user => {
+      this.authenticated = !!user;
+      if (user && this.code) {
+        this.validateAndShow();
+      }
+    });
+  }
+  
+  async signIn() {
+    await this.authService.loginGoogle();
+  }
+  
+  async validateAndShow() {
+    const invitation = await this.invitacionesService.validarCodigo(this.code);
+    if (invitation) {
+      this.inviteEmail = invitation.email;
+    } else {
+      alert('Invalid invitation code');
+      this.router.navigate(['/']);
+    }
+  }
+  
+  async accept() {
+    this.processing = true;
+    
+    try {
+      await this.invitacionesService.aceptarCodigo(this.code);
+      this.accepted = true;
+    } catch (error: any) {
+      if (error.message === 'Ya perteneces a un hogar') {
+        alert('You already belong to a home');
+      } else {
+        alert('Failed to accept invitation');
+      }
+    } finally {
+      this.processing = false;
+    }
+  }
+}
+```
+
+---
+
+## Types
+
+### Invitacion Interface
+
+<Expandable title="Invitacion Properties">
+  <ResponseField name="id" type="string">
+    Document ID (same as codigo)
+  </ResponseField>
+  <ResponseField name="hogarId" type="string">
+    ID of the home being invited to
+  </ResponseField>
+  <ResponseField name="email" type="string">
+    Email address of invited user (lowercase)
+  </ResponseField>
+  <ResponseField name="codigo" type="string">
+    8-character invitation code
+  </ResponseField>
+  <ResponseField name="creadoEn" type="Timestamp">
+    Creation timestamp
+  </ResponseField>
+  <ResponseField name="usado" type="boolean">
+    Whether invitation has been used
+  </ResponseField>
+  <ResponseField name="usadoPorUid" type="string | null">
+    UID of user who accepted (null if not used)
+  </ResponseField>
+  <ResponseField name="usadoEn" type="Timestamp | null">
+    When invitation was accepted (null if not used)
+  </ResponseField>
+</Expandable>
+
+---
+
+## Security Considerations
+
+- **Email verification**: Invitations are tied to specific email addresses
+- **One-time use**: Codes can only be used once
+- **Transaction safety**: Acceptance uses Firestore transactions to prevent race conditions
+- **Case insensitive**: Email and code matching is case-insensitive
+- **Pre-validation**: Users cannot accept if they already belong to a home
+
+---
+
+## Firebase Integration
+
+The service integrates with:
+- **Collection**: `invitaciones/{codigo}`
+- **Collection**: `hogares/{hogarId}/miembros/{uid}` (member roster)
+- **Collection**: `usuarios/{uid}` (user profiles)
+- **Transaction support**: Uses `runTransaction` for atomic operations
+
+---
+
+## See Also
+
+- [HogarService](/api/hogar-service)
+- [AuthService](/api/auth-service)
+- [Firebase Transactions](https://firebase.google.com/docs/firestore/manage-data/transactions)

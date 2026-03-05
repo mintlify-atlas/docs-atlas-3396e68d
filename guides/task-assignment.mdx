@@ -1,0 +1,568 @@
+---
+title: Task Assignment
+description: Learn how tasks are assigned, reassigned, and requested in ZenHogar
+---
+
+## Overview
+
+Task assignment in ZenHogar is flexible, allowing members to self-assign, request assignments from others, and administrators to assign tasks directly. This guide covers all assignment workflows.
+
+## Assignment Methods
+
+There are three ways to assign a task:
+
+1. **Self-assignment**: A member assigns an available task to themselves
+2. **Direct assignment**: The current assignee or admin assigns to another member
+3. **Request assignment**: A member requests another member to take a task
+
+## Self-Assignment Workflow
+
+<Steps>
+  <Step title="View Available Tasks">
+    Members see a list of unassigned tasks (where `asignadA` is `null`).
+  </Step>
+
+  <Step title="Claim a Task">
+    When a member clicks to claim a task, the system assigns it to them:
+    
+    ```typescript
+    async asignarTarea(
+      tareaId: string,
+      nuevoUid: string,
+      penalizacionAbandono: number = PENALIZACION_ABANDONO,
+    ): Promise<void> {
+      const currentUser = this.authService.currentUser;
+      if (!currentUser) {
+        throw new Error('Modo demo: no se puede asignar tarea.');
+      }
+      
+      const tareaRef = doc(this.fs, 'tareas', tareaId);
+      const tareaSnap = await getDoc(tareaRef);
+      if (!tareaSnap.exists()) {
+        throw new Error('Tarea no encontrada');
+      }
+      
+      const tareaActual = tareaSnap.data() as Tarea;
+      const historialActual = [...(tareaActual.historial ?? [])];
+      
+      // If there was a previous assignee, log them in history
+      if (tareaActual.asignadA && tareaActual.asignadoNombre) {
+        historialActual.push({
+          uid: tareaActual.asignadA,
+          nombre: tareaActual.asignadoNombre,
+          fotoURL: tareaActual.asignadoFotoURL || '',
+          fecha: new Date().toISOString(),
+          completada: tareaActual.completada || false,
+          hogarId: tareaActual.hogarId,
+        });
+      }
+      
+      // Get new assignee's profile
+      const usuarioRef = doc(this.fs, 'usuarios', nuevoUid);
+      const snap = await getDoc(usuarioRef);
+      if (!snap.exists()) throw new Error('Usuario no encontrado');
+      
+      const user = snap.data() as Usuario;
+      
+      // Assign task
+      await updateDoc(tareaRef, {
+        asignadA: nuevoUid,
+        asignadoNombre: user.nombre,
+        asignadoFotoURL: user.photoURL || null,
+        historial: historialActual,
+      });
+    }
+    ```
+  </Step>
+
+  <Step title="Task Marked as Assigned">
+    The task document is updated with:
+    - `asignadA`: The member's UID
+    - `asignadoNombre`: The member's display name
+    - `asignadoFotoURL`: The member's profile photo
+    - History entry for the previous assignee (if any)
+  </Step>
+
+  <Step title="Task Appears in Member's List">
+    The task now appears in the member's "My Tasks" list and can be completed.
+  </Step>
+</Steps>
+
+## Unassigning a Task
+
+Members can release tasks back to the pool:
+
+```typescript
+// To unassign, call asignarTarea with null
+if (!nuevoUid) {
+  const ahoraIso = new Date().toISOString();
+  const enCurso = this.esEnCurso(tareaActual);
+  const soyAsignado = tareaActual.asignadA === currentUser.uid;
+  const penaliza = enCurso && soyAsignado && penalizacionAbandono !== 0;
+  
+  if (tareaActual.asignadA && tareaActual.asignadoNombre) {
+    const nuevaEntrada: any = {
+      uid: tareaActual.asignadA,
+      nombre: tareaActual.asignadoNombre,
+      fotoURL: tareaActual.asignadoFotoURL || '',
+      fecha: ahoraIso,
+      completada: tareaActual.completada || false,
+      hogarId: tareaActual.hogarId,
+    };
+    
+    // Apply penalty if abandoning an in-progress task
+    if (penaliza) {
+      nuevaEntrada.puntosOtorgados = penalizacionAbandono;
+      nuevaEntrada.fechaOtorgados = ahoraIso;
+      nuevaEntrada.motivo = 'abandono';
+    }
+    
+    await updateDoc(tareaRef, {
+      asignadA: null,
+      asignadoNombre: null,
+      asignadoFotoURL: null,
+      historial: [...historialActual, nuevaEntrada],
+    });
+  }
+  
+  // Register penalty points
+  if (penaliza) {
+    await this.registrarPenalizacionAbandono(
+      tareaActual,
+      currentUser.uid,
+      penalizacionAbandono,
+    );
+  }
+  
+  return;
+}
+```
+
+<Warning>
+  Abandoning a task you've started incurs a penalty by default. The penalty is configured in `PENALIZACION_ABANDONO` constant (typically -10 points).
+</Warning>
+
+## Assignment Request Workflow
+
+<Steps>
+  <Step title="Create Assignment Request">
+    A member can request another member to take over a task:
+    
+    ```typescript
+    async crearPeticionAsignacion(data: {
+      tareaId: string;
+      hogarId: string;
+      deUid: string;    // Requester's UID
+      paraUid: string;  // Target member's UID
+    }): Promise<void> {
+      const { tareaId, hogarId, deUid, paraUid } = data;
+      
+      if (!deUid || !paraUid || !tareaId || !hogarId) {
+        throw new Error('Datos incompletos para crear petición.');
+      }
+      if (deUid === paraUid) {
+        throw new Error('La petición a uno mismo no es necesaria.');
+      }
+      
+      const colRef = collection(this.fs, 'peticionesAsignacion');
+      const deSnap = await getDoc(doc(this.fs, 'usuarios', deUid));
+      const paraSnap = await getDoc(doc(this.fs, 'usuarios', paraUid));
+      
+      const deNombre = deSnap.exists()
+        ? ((deSnap.data() as Usuario).nombre ?? '')
+        : '';
+      const paraNombre = paraSnap.exists()
+        ? ((paraSnap.data() as Usuario).nombre ?? '')
+        : '';
+      
+      const payload = {
+        tareaId,
+        hogarId,
+        deUid,
+        paraUid,
+        deNombre,
+        paraNombre,
+        estado: 'pendiente' as const,
+        fecha: new Date().toISOString(),
+      };
+      
+      // Use task ID as document ID to prevent duplicate requests
+      const ref = doc(this.fs, 'peticionesAsignacion', tareaId);
+      
+      await setDoc(ref, {
+        ...payload,
+        fecha: serverTimestamp(),
+      });
+    }
+    ```
+    
+    <Note>
+      Using the task ID as the document ID ensures only one pending request exists per task at a time.
+    </Note>
+  </Step>
+
+  <Step title="Target Member Receives Notification">
+    The target member sees the request in their notifications:
+    
+    ```typescript
+    peticionesPendientesPara$(uid: string): Observable<PeticionAsignacionDTO[]> {
+      if (!uid) return of([]);
+      
+      return authState(this.auth).pipe(
+        switchMap((user) => {
+          if (!user) return of([]);
+          const colRef = collection(this.fs, 'peticionesAsignacion');
+          const qy = query(
+            colRef,
+            where('paraUid', '==', uid),
+            where('estado', '==', 'pendiente'),
+          );
+          return collectionData(qy, { idField: 'id' });
+        }),
+        catchError(() => of([])),
+      );
+    }
+    ```
+  </Step>
+
+  <Step title="View Request Dialog">
+    The target member opens the request dialog to see details:
+    
+    ```typescript
+    // DialogPeticionAsignacionComponent
+    constructor(
+      @Inject(MAT_DIALOG_DATA) public data: { 
+        peticion: PeticionAsignacionDTO; 
+        tareaNombre: string 
+      },
+    ) {
+      this.peticion = data.peticion;
+      this.tareaNombre = data.tareaNombre;
+      
+      // Display requester info
+      if (this.peticion.deNombre?.trim()) {
+        this.solicitanteNombre = this.peticion.deNombre.trim();
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Accept or Reject Request">
+    The target member can accept or reject:
+    
+    **Accepting the Request**:
+    ```typescript
+    async aceptarPeticion(peticionId: string): Promise<void> {
+      const petRef = doc(this.fs, 'peticionesAsignacion', peticionId);
+      const petSnap = await getDoc(petRef);
+      if (!petSnap.exists()) throw new Error('Petición no encontrada');
+      
+      const pet = petSnap.data() as PeticionAsignacionDTO;
+      if (pet.estado !== 'pendiente') {
+        throw new Error('La petición ya fue procesada.');
+      }
+      
+      const tareaRef = doc(this.fs, 'tareas', pet.tareaId);
+      const tareaSnap = await getDoc(tareaRef);
+      if (!tareaSnap.exists()) throw new Error('Tarea no encontrada');
+      
+      const tarea = tareaSnap.data() as Tarea;
+      
+      // Can't reassign if awaiting ratings
+      if (
+        tarea.bloqueadaHastaValoracion ||
+        (tarea.valoracionesPendientes?.length ?? 0) > 0
+      ) {
+        throw new Error(
+          'No se puede reasignar hasta completar las valoraciones.',
+        );
+      }
+      
+      const usuarioRef = doc(this.fs, 'usuarios', pet.paraUid);
+      const usuarioSnap = await getDoc(usuarioRef);
+      if (!usuarioSnap.exists()) throw new Error('Usuario destino no encontrado');
+      
+      const user = usuarioSnap.data() as Usuario;
+      
+      const batch = writeBatch(this.fs);
+      
+      // Add previous assignee to history
+      const historialActual = [...(tarea.historial ?? [])];
+      if (tarea.asignadA && tarea.asignadoNombre) {
+        historialActual.push({
+          uid: tarea.asignadA,
+          nombre: tarea.asignadoNombre,
+          fotoURL: tarea.asignadoFotoURL || '',
+          fecha: new Date().toISOString(),
+          completada: tarea.completada || false,
+          hogarId: tarea.hogarId,
+        });
+      }
+      
+      // Assign to new member
+      batch.update(tareaRef, {
+        asignadA: pet.paraUid,
+        asignadoNombre: user.nombre,
+        asignadoFotoURL: user.photoURL || null,
+        historial: historialActual,
+      });
+      
+      // Mark request as accepted
+      batch.update(petRef, {
+        estado: 'aceptada',
+        aceptadaEn: serverTimestamp(),
+        aceptadaPorUid: pet.paraUid,
+        aceptadaPorNombre: user.nombre ?? null,
+        aceptacionNotificadaSolicitante: false,
+      });
+      
+      await batch.commit();
+    }
+    ```
+    
+    **Rejecting the Request**:
+    ```typescript
+    async rechazarPeticion(peticionId: string): Promise<void> {
+      const petRef = doc(this.fs, 'peticionesAsignacion', peticionId);
+      const petSnap = await getDoc(petRef);
+      if (!petSnap.exists()) throw new Error('Petición no encontrada');
+      
+      const pet = petSnap.data() as PeticionAsignacionDTO;
+      if (pet.estado !== 'pendiente') {
+        throw new Error('La petición ya fue procesada.');
+      }
+      
+      const usuarioRef = doc(this.fs, 'usuarios', pet.paraUid);
+      const usuarioSnap = await getDoc(usuarioRef);
+      const rechazador = usuarioSnap.exists()
+        ? (usuarioSnap.data() as Usuario)
+        : undefined;
+      
+      await updateDoc(petRef, {
+        estado: 'rechazada',
+        rechazadaEn: serverTimestamp(),
+        rechazadaPorUid: pet.paraUid,
+        rechazadaPorNombre: rechazador?.nombre ?? null,
+        rechazoNotificadoSolicitante: false,
+      });
+    }
+    ```
+  </Step>
+
+  <Step title="Requester Notified">
+    The requester receives notification of acceptance or rejection:
+    
+    ```typescript
+    // Query accepted requests
+    aceptadasParaSolicitante$(
+      uidSolicitante: string,
+    ): Observable<PeticionAsignacionDTO[]> {
+      if (!uidSolicitante) return of([]);
+      
+      return authState(this.auth).pipe(
+        switchMap((user) => {
+          if (!user) return of([]);
+          
+          const userRef = doc(this.fs, `usuarios/${user.uid}`);
+          return docData(userRef).pipe(
+            switchMap((u: any) => {
+              const hogarId = u?.hogarId;
+              if (!hogarId) return of([]);
+              
+              const colRef = collection(this.fs, 'peticionesAsignacion');
+              const qy = query(
+                colRef,
+                where('hogarId', '==', hogarId),
+                where('deUid', '==', uidSolicitante),
+                where('estado', '==', 'aceptada'),
+              );
+              return collectionData(qy, { idField: 'id' });
+            }),
+          );
+        }),
+        map((list) =>
+          (list ?? []).filter((p) => p.aceptacionNotificadaSolicitante !== true),
+        ),
+      );
+    }
+    ```
+  </Step>
+</Steps>
+
+## Request Data Model
+
+```typescript
+export interface PeticionAsignacionDTO {
+  id?: string;
+  tareaId: string;                    // Task being requested
+  hogarId: string;                    // Household context
+  deUid: string;                      // Requester UID
+  paraUid: string;                    // Target member UID
+  deNombre?: string;                  // Requester name
+  paraNombre?: string;                // Target member name
+  estado: 'pendiente' | 'aceptada' | 'rechazada' | 'cancelada';
+  fecha: string | Timestamp;          // Request creation time
+  
+  // Acceptance tracking
+  aceptadaEn?: Timestamp;
+  aceptadaPorUid?: string;
+  aceptadaPorNombre?: string;
+  aceptacionNotificadaSolicitante?: boolean;
+  aceptacionNotificadaSolicitanteEn?: Timestamp;
+  
+  // Rejection tracking
+  rechazadaEn?: Timestamp;
+  rechazadaPorUid?: string;
+  rechazadaPorNombre?: string;
+  rechazoNotificadoSolicitante?: boolean;
+  rechazoNotificadoSolicitanteEn?: Timestamp;
+  
+  // Cancellation tracking
+  canceladaEn?: Timestamp;
+  cancelacionMotivo?: string;
+}
+```
+
+## Assignment Restrictions
+
+### Cannot Reassign During Rating
+
+Tasks awaiting ratings cannot be reassigned:
+
+```typescript
+const enCurso = this.esEnCurso(tareaActual);
+const soyAsignado = tareaActual.asignadA === currentUser.uid;
+
+if (enCurso && !soyAsignado) {
+  throw new Error('Solo quien la tiene en curso puede reasignar.');
+}
+
+private esEnCurso(t: Tarea): boolean {
+  const pendientes = (t.valoracionesPendientes?.length ?? 0) > 0;
+  return (
+    !!t.asignadA &&
+    !t.completada &&
+    !pendientes &&
+    !t.bloqueadaHastaValoracion
+  );
+}
+```
+
+### Cleanup When Members Leave
+
+When a member leaves a household, their task assignments are cleaned up:
+
+```typescript
+async liberarTareasDeUsuarioQueSale(
+  hogarId: string,
+  uid: string,
+): Promise<number> {
+  const colT = collection(this.fs, 'tareas').withConverter(tareaConverter);
+  const qT = query(
+    colT,
+    where('hogarId', '==', hogarId),
+    where('asignadA', '==', uid),
+  );
+  
+  const snap = await getDocs(qT);
+  const batch = writeBatch(this.fs);
+  let count = 0;
+  
+  snap.forEach((docu) => {
+    const t = docu.data() as Tarea;
+    
+    // Don't touch tasks awaiting ratings
+    const pendienteValoracion =
+      !!t.bloqueadaHastaValoracion ||
+      (t.valoracionesPendientes?.length ?? 0) > 0;
+    
+    if (pendienteValoracion) return;
+    
+    const ref = doc(this.fs, 'tareas', docu.id);
+    
+    // Log in history
+    const historial = [...(t.historial ?? [])];
+    historial.push({
+      uid,
+      nombre: t.asignadoNombre ?? 'Usuario',
+      fotoURL: t.asignadoFotoURL ?? '',
+      fecha: new Date().toISOString(),
+      completada: false,
+      hogarId,
+      motivo: 'usuario_salio_hogar',
+    } as any);
+    
+    batch.update(ref, {
+      asignadA: null,
+      asignadoNombre: null,
+      asignadoFotoURL: null,
+      historial,
+    });
+    
+    count++;
+  });
+  
+  if (count > 0) await batch.commit();
+  return count;
+}
+```
+
+Pending requests are also cancelled:
+
+```typescript
+async cancelarPeticionesPendientesDeUsuarioQueSale(
+  hogarId: string,
+  uid: string,
+): Promise<number> {
+  const colP = collection(this.fs, 'peticionesAsignacion');
+  
+  // Find requests to this user
+  const qPara = query(
+    colP,
+    where('hogarId', '==', hogarId),
+    where('paraUid', '==', uid),
+    where('estado', '==', 'pendiente'),
+  );
+  
+  // Find requests from this user
+  const qDe = query(
+    colP,
+    where('hogarId', '==', hogarId),
+    where('deUid', '==', uid),
+    where('estado', '==', 'pendiente'),
+  );
+  
+  const [snapPara, snapDe] = await Promise.all([
+    getDocs(qPara),
+    getDocs(qDe),
+  ]);
+  
+  const batch = writeBatch(this.fs);
+  let count = 0;
+  
+  // Cancel all related requests
+  [snapPara, snapDe].forEach((s) => {
+    s.forEach((d) => {
+      batch.update(d.ref, {
+        estado: 'cancelada',
+        canceladaEn: serverTimestamp(),
+        cancelacionMotivo: 'usuario_fuera_hogar',
+      });
+      count++;
+    });
+  });
+  
+  if (count > 0) await batch.commit();
+  return count;
+}
+```
+
+<Note>
+  Task assignments and requests are automatically cleaned up when members leave to prevent orphaned data and ensure consistency.
+</Note>
+
+## Related Workflows
+
+- [Managing Tasks](/guides/managing-tasks) - Create and edit tasks
+- [Task Rating](/guides/task-rating) - Rate completed tasks
+- [Inviting Members](/guides/inviting-members) - Add members to assign tasks to

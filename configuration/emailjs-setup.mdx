@@ -1,0 +1,341 @@
+---
+title: EmailJS Setup
+description: Configure EmailJS for sending invitation and notification emails in ZenHogar
+---
+
+ZenHogar uses [EmailJS](https://www.emailjs.com/) to send emails directly from the browser without a backend server. This enables household invitation emails and notifications when a household is deleted.
+
+## Prerequisites
+
+- An email account (Gmail, Outlook, etc.)
+- ZenHogar Firebase setup completed
+- EmailJS account (free tier available)
+
+## Create EmailJS Account
+
+<Steps>
+  <Step title="Sign up for EmailJS">
+    Go to [emailjs.com](https://www.emailjs.com/) and click **Sign Up** (or **Get Started**).
+  </Step>
+
+  <Step title="Choose authentication method">
+    You can sign up with Google, GitHub, or email/password.
+  </Step>
+
+  <Step title="Verify your account">
+    Check your email for a verification link and confirm your account.
+  </Step>
+</Steps>
+
+## Add Email Service
+
+<Steps>
+  <Step title="Navigate to Email Services">
+    After logging in, go to **Email Services** in the left sidebar.
+  </Step>
+
+  <Step title="Add New Service">
+    Click **Add New Service**.
+  </Step>
+
+  <Step title="Select email provider">
+    Choose your email provider:
+    - **Gmail** - Recommended for personal projects
+    - **Outlook/Office 365**
+    - **Yahoo**
+    - **Custom SMTP** - For other providers
+
+    <Note>
+      For Gmail, you'll need to enable "Less secure app access" or use an App Password if 2FA is enabled.
+    </Note>
+  </Step>
+
+  <Step title="Configure service">
+    1. Enter your email credentials
+    2. Give the service a name (e.g., "ZenHogar Gmail")
+    3. Click **Create Service**
+    4. **Copy the Service ID** - you'll need this for configuration
+  </Step>
+</Steps>
+
+<Warning>
+  Keep your Service ID secure. While it's used in client-side code, EmailJS rate limits prevent abuse.
+</Warning>
+
+## Create Email Templates
+
+ZenHogar uses two email templates:
+
+### Template 1: Household Invitation
+
+<Steps>
+  <Step title="Navigate to Email Templates">
+    Click **Email Templates** in the left sidebar.
+  </Step>
+
+  <Step title="Create New Template">
+    Click **Create New Template**.
+  </Step>
+
+  <Step title="Configure invitation template">
+    Set up the template with these details:
+
+    **Template Name**: `Invitación ZenHogar` (or any name you prefer)
+
+    **Subject**: `Invitación a {{hogar}} en ZenHogar`
+
+    **Content**:
+    ```html
+    Hola,
+
+    Has sido invitado/a a unirse al hogar "{{hogar}}" en ZenHogar.
+
+    Código de acceso: {{codigo}}
+
+    Para unirte:
+    1. Abre ZenHogar en tu navegador
+    2. Inicia sesión con tu cuenta de Google
+    3. Selecciona "Unirse a un hogar"
+    4. Introduce el código: {{codigo}}
+
+    ¡Nos vemos en ZenHogar!
+    ```
+
+    **To Email**: `{{to_email}}`
+
+    <Note>
+      The double curly braces `{{}}` are EmailJS template variables that will be replaced with actual values when sending.
+    </Note>
+  </Step>
+
+  <Step title="Save and copy Template ID">
+    1. Click **Save**
+    2. **Copy the Template ID** - you'll use this as `templateId` in your configuration
+  </Step>
+</Steps>
+
+### Template 2: Household Deleted Notification
+
+<Steps>
+  <Step title="Create second template">
+    Click **Create New Template** again.
+  </Step>
+
+  <Step title="Configure deletion notification template">
+    **Template Name**: `Hogar Eliminado - ZenHogar`
+
+    **Subject**: `El hogar "{{hogar}}" ha sido eliminado`
+
+    **Content**:
+    ```html
+    Hola,
+
+    Te informamos que el hogar "{{hogar}}" ha sido eliminado por el administrador {{admin_nombre}}.
+
+    Todos los datos, tareas y notificaciones asociadas han sido eliminados.
+
+    Si tienes preguntas, contacta con el administrador del hogar.
+
+    Gracias por usar ZenHogar.
+    ```
+
+    **To Email**: `{{to_email}}`
+  </Step>
+
+  <Step title="Save and copy Template ID">
+    Save the template and **copy this Template ID** - you'll use this as `templates.hogarEliminado`.
+  </Step>
+</Steps>
+
+## Get Public Key
+
+<Steps>
+  <Step title="Navigate to Account">
+    Click your profile icon and go to **Account** (or **API Keys**).
+  </Step>
+
+  <Step title="Copy Public Key">
+    Find your **Public Key** (also called **User ID** in older versions) and copy it.
+
+    <Note>
+      The Public Key is safe to use in client-side code. EmailJS uses it to identify your account.
+    </Note>
+  </Step>
+</Steps>
+
+## Configure ZenHogar
+
+Update your `src/environments/environment.local.ts` with EmailJS credentials:
+
+<CodeGroup>
+```typescript environment.local.ts
+export const environment = {
+  production: false,
+  firebase: {
+    // ... your Firebase config
+  },
+  emailjs: {
+    serviceId: 'service_abc1234',        // Your Email Service ID
+    templateId: 'template_xyz5678',      // Invitation template ID
+    publicKey: 'your_public_key_here',   // Your Public Key
+    templates: {
+      hogarEliminado: 'template_del9012' // Deletion notification template ID
+    }
+  }
+};
+```
+
+```typescript environment.prod.example.ts
+export const environment = {
+  production: true,
+  firebase: {
+    projectId: 'your-prod-project-id',
+    appId: 'your-prod-app-id',
+    storageBucket: 'your-prod-bucket',
+    apiKey: 'your-prod-api-key',
+    authDomain: 'your-prod-auth-domain',
+    messagingSenderId: 'your-prod-sender-id',
+  },
+  emailjs: {
+    serviceId: 'service_prod_abc',
+    templateId: 'template_prod_xyz',
+    publicKey: 'your_prod_public_key',
+    templates: {
+      hogarEliminado: 'template_prod_del'
+    }
+  }
+};
+```
+</CodeGroup>
+
+## How EmailJS Works in ZenHogar
+
+The `EmailService` handles all email operations:
+
+### Sending Invitations
+
+```typescript
+// src/app/shared/email/email.service.ts:7
+enviarInvitacion(destino: string, hogar: string, codigo: string) {
+  const params = { to_email: destino, hogar, codigo };
+  return emailjs.send(
+    environment.emailjs.serviceId,
+    environment.emailjs.templateId,
+    params,
+    environment.emailjs.publicKey
+  );
+}
+```
+
+**Parameters sent to template:**
+- `to_email` - Recipient's email address
+- `hogar` - Household name
+- `codigo` - Invitation code
+
+### Sending Deletion Notifications
+
+```typescript
+// src/app/shared/email/email.service.ts:17
+enviarAvisoHogarEliminado(destino: string, hogar: string, adminNombre: string) {
+  const params = {
+    to_email: destino,
+    hogar,
+    admin_nombre: adminNombre || 'Administrador',
+  };
+  return emailjs.send(
+    environment.emailjs.serviceId,
+    environment.emailjs.templates.hogarEliminado,
+    params,
+    environment.emailjs.publicKey
+  );
+}
+```
+
+**Parameters sent to template:**
+- `to_email` - Recipient's email address
+- `hogar` - Household name
+- `admin_nombre` - Administrator's name
+
+## Test Email Sending
+
+<Steps>
+  <Step title="Start development server">
+    ```bash
+    npm start
+    ```
+  </Step>
+
+  <Step title="Create a test household">
+    1. Sign in with Google
+    2. Create a new household
+  </Step>
+
+  <Step title="Send test invitation">
+    1. Open the invite dialog
+    2. Enter a valid email address
+    3. Send the invitation
+    4. Check the recipient's inbox
+  </Step>
+
+  <Step title="Verify email received">
+    Confirm the email:
+    - Arrives in the inbox (check spam if not)
+    - Contains correct household name
+    - Shows the invitation code
+    - Template variables are properly replaced
+  </Step>
+</Steps>
+
+## EmailJS Free Tier Limits
+
+<Note>
+  EmailJS free tier includes:
+  - **200 emails/month**
+  - **2 email services**
+  - **2 email templates per service**
+  - **Basic support**
+
+  For production apps with more users, consider upgrading to a paid plan.
+</Note>
+
+## Troubleshooting
+
+### Emails Not Sending
+
+1. **Check browser console** for EmailJS errors
+2. **Verify credentials** - Ensure Service ID, Template IDs, and Public Key are correct
+3. **Check EmailJS dashboard** - Look for error logs in your EmailJS account
+4. **Rate limiting** - Free tier has monthly limits (200 emails/month)
+
+### Emails Going to Spam
+
+1. **Use professional templates** - Avoid spam trigger words
+2. **Verify sender** - Use a verified email address in EmailJS
+3. **Add SPF/DKIM** - Configure email authentication (advanced)
+4. **Ask users to whitelist** - Add your sender email to contacts
+
+### Template Variables Not Replacing
+
+1. **Check parameter names** - Must match exactly (case-sensitive)
+2. **Verify syntax** - Use `{{variable}}` in templates, not `{variable}`
+3. **Check EmailJS logs** - View sent emails in EmailJS dashboard to debug
+
+## Security Best Practices
+
+<Warning>
+  - **Never commit** `environment.local.ts` to version control
+  - **Use environment variables** for production deployments
+  - **Enable EmailJS rate limiting** to prevent abuse
+  - **Monitor usage** in EmailJS dashboard for suspicious activity
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Environment Variables" icon="gear" href="/configuration/environment">
+    Complete environment configuration reference
+  </Card>
+  <Card title="Firebase Setup" icon="fire" href="/configuration/firebase-setup">
+    Configure Firebase authentication and database
+  </Card>
+</CardGroup>

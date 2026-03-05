@@ -1,0 +1,769 @@
+---
+title: 'TareasService'
+description: 'Manages tasks, assignments, ratings, requests, and points calculation'
+icon: 'list-check'
+---
+
+## Overview
+
+The `TareasService` is a comprehensive service for managing household tasks. It handles task creation, assignment, completion, ratings, task requests between members, and points calculation. It integrates closely with the home and user systems.
+
+**Location**: `src/app/core/tareas/services/tareas.service.ts`
+
+**Injectable**: `{ providedIn: 'root' }`
+
+---
+
+## Task Queries
+
+### getTareasPorHogar()
+
+<ParamField path="getTareasPorHogar(hogarId, enrich?)" type="Observable<TareaDTO[]>">
+  Returns all tasks for a specific home with optional user profile enrichment.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+  <ResponseField name="enrich" type="boolean" default="true">
+    Whether to enrich tasks with assignee names and photos from Firestore
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<TareaDTO[]>`
+
+**Example**:
+```typescript
+this.tareasService.getTareasPorHogar(hogarId).subscribe(tareas => {
+  console.log(`Found ${tareas.length} tasks`);
+  tareas.forEach(t => {
+    console.log(`${t.nombre} - Assigned to: ${t.asignadoNombre}`);
+  });
+});
+```
+
+---
+
+### getTareasAsignadasUsuario()
+
+<ParamField path="getTareasAsignadasUsuario(hogarId, uid)" type="Observable<TareaDTO[]>">
+  Returns tasks assigned to a specific user in a home.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+  <ResponseField name="uid" type="string" required>
+    User ID to filter by
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<TareaDTO[]>`
+
+**Example**:
+```typescript
+this.tareasService.getTareasAsignadasUsuario(hogarId, userId)
+  .subscribe(myTasks => {
+    console.log('My tasks:', myTasks.length);
+  });
+```
+
+---
+
+### getPuntosSemana()
+
+<ParamField path="getPuntosSemana(hogarId, uid)" type="Observable<number>">
+  Calculates points earned by a user in the current week (starting Monday).
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+  <ResponseField name="uid" type="string" required>
+    User ID
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<number>` - Total points earned this week
+
+**Example**:
+```typescript
+this.tareasService.getPuntosSemana(hogarId, currentUid)
+  .subscribe(points => {
+    console.log('Points this week:', points);
+  });
+```
+
+---
+
+## Task Management
+
+### crearTarea()
+
+<ParamField path="crearTarea(data)" type="Promise<string>">
+  Creates a new task in a home.
+</ParamField>
+
+**Parameters**:
+<Expandable title="data object properties">
+  <ResponseField name="nombre" type="string" required>
+    Task name
+  </ResponseField>
+  <ResponseField name="descripcion" type="string">
+    Task description
+  </ResponseField>
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+  <ResponseField name="personalizada" type="boolean" required>
+    Whether this is a custom task (vs. default)
+  </ResponseField>
+  <ResponseField name="asignadA" type="string | null">
+    UID of assigned user (null if unassigned)
+  </ResponseField>
+  <ResponseField name="peso" type="number">
+    Task weight multiplier for points (default: 1)
+  </ResponseField>
+  <ResponseField name="creadorUid" type="string" required>
+    UID of task creator
+  </ResponseField>
+  <ResponseField name="creadorNombre" type="string">
+    Name of creator
+  </ResponseField>
+  <ResponseField name="creadorFotoURL" type="string">
+    Creator's photo URL
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Promise<string>` - ID of created task
+
+**Example**:
+```typescript
+const taskId = await this.tareasService.crearTarea({
+  nombre: 'Limpiar cocina',
+  descripcion: 'Fregar platos y limpiar encimeras',
+  hogarId: currentHogarId,
+  personalizada: true,
+  asignadA: null,
+  peso: 2,
+  creadorUid: currentUser.uid,
+  creadorNombre: currentUser.displayName,
+  creadorFotoURL: currentUser.photoURL
+});
+
+console.log('Task created:', taskId);
+```
+
+---
+
+### actualizarTarea()
+
+<ParamField path="actualizarTarea(tareaId, data)" type="Promise<void>">
+  Updates task name, description, and weight.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="tareaId" type="string" required>
+    ID of task to update
+  </ResponseField>
+  <ResponseField name="data" type="object" required>
+    Object with `nombre`, `descripcion`, and `peso` properties
+  </ResponseField>
+</Expandable>
+
+**Throws**:
+- `'Modo demo: no se puede editar tarea.'`: No authenticated user
+- `'tareaId requerido'`: Missing task ID
+- `'Nombre inválido'`: Name too short (< 2 chars)
+
+**Example**:
+```typescript
+await this.tareasService.actualizarTarea(taskId, {
+  nombre: 'Limpiar cocina a fondo',
+  descripcion: 'Incluir nevera y horno',
+  peso: 3
+});
+```
+
+---
+
+### crearTareasPorDefecto()
+
+<ParamField path="crearTareasPorDefecto(hogarId, adminUid)" type="Promise<void>">
+  Creates default tasks for a new home. Called automatically by `HogarService.crearHogar()`.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+  <ResponseField name="adminUid" type="string" required>
+    UID of home creator/admin
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Promise<void>`
+
+---
+
+## Task Assignment
+
+### asignarTarea()
+
+<ParamField path="asignarTarea(tareaId, nuevoUid, penalizacionAbandono?)" type="Promise<void>">
+  Assigns or unassigns a task. Records assignment history and optionally applies abandonment penalty.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="tareaId" type="string" required>
+    ID of the task
+  </ResponseField>
+  <ResponseField name="nuevoUid" type="string" required>
+    UID of new assignee, or empty string to unassign
+  </ResponseField>
+  <ResponseField name="penalizacionAbandono" type="number" default="-5">
+    Penalty points when unassigning an in-progress task (negative number)
+  </ResponseField>
+</Expandable>
+
+**Throws**:
+- `'Modo demo: no se puede asignar tarea.'`: No authenticated user
+- `'Tarea no encontrada'`: Task doesn't exist
+- `'Solo quien la tiene en curso puede reasignar.'`: Task in progress by another user
+- `'Usuario no encontrado'`: Target user doesn't exist
+
+**Behavior**:
+- Adds previous assignment to task history
+- Applies penalty if unassigning in-progress task
+- Updates assignee name and photo
+
+**Example**:
+```typescript
+// Assign task to user
+await this.tareasService.asignarTarea(taskId, userId);
+
+// Unassign task (with penalty if in progress)
+await this.tareasService.asignarTarea(taskId, '', -10);
+
+// Unassign without penalty
+await this.tareasService.asignarTarea(taskId, '', 0);
+```
+
+---
+
+## Task Completion & Rating
+
+### finalizarTareaConCancelacion()
+
+<ParamField path="finalizarTareaConCancelacion(tarea, usuarioActual, miembros)" type="Promise<void>">
+  Marks a task as complete and triggers the rating workflow if there are other members to rate it.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="tarea" type="TareaDTO" required>
+    Task to complete
+  </ResponseField>
+  <ResponseField name="usuarioActual" type="object" required>
+    Current user object with `uid`, `displayName`, `photoURL`
+  </ResponseField>
+  <ResponseField name="miembros" type="{ uid: string }[]" required>
+    Array of home members
+  </ResponseField>
+</Expandable>
+
+**Behavior**:
+- **Case 1**: Other members exist → Sets `completada: true`, adds to history, sets `valoracionesPendientes` array, unassigns
+- **Case 2**: No other members → Closes task without points, marks as `sin_valoradores`, leaves unassigned
+
+**Example**:
+```typescript
+const user = this.auth.currentUser;
+const miembros = [{ uid: 'user1' }, { uid: 'user2' }, { uid: 'user3' }];
+
+await this.tareasService.finalizarTareaConCancelacion(
+  tarea,
+  {
+    uid: user.uid,
+    displayName: user.displayName,
+    photoURL: user.photoURL
+  },
+  miembros
+);
+
+console.log('Task completed, awaiting ratings');
+```
+
+---
+
+### valorarTarea()
+
+<ParamField path="valorarTarea(tareaId, puntuacion, comentario, uidActual)" type="Promise<void>">
+  Submits a rating for a completed task. When all ratings are submitted, awards points to the task completer.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="tareaId" type="string" required>
+    ID of the task
+  </ResponseField>
+  <ResponseField name="puntuacion" type="number" required>
+    Rating value (typically 1-5)
+  </ResponseField>
+  <ResponseField name="comentario" type="string" required>
+    Rating comment
+  </ResponseField>
+  <ResponseField name="uidActual" type="string" required>
+    UID of the user submitting the rating
+  </ResponseField>
+</Expandable>
+
+**Throws**:
+- `'Modo demo: no se puede valorar tarea.'`: No authenticated user
+- `'Tarea no encontrada'`: Task doesn't exist
+- `'Ya has valorado esta tarea.'`: User already rated this task
+- `'No tienes esta tarea pendiente de valorar.'`: User not in pending raters list
+
+**Behavior**:
+- Adds rating to `valoraciones` array
+- Removes user from `valoracionesPendientes`
+- When all ratings submitted:
+  - Calculates average rating
+  - Converts to points using `PUNTOS_POR_VALORACION` mapping
+  - Multiplies by task weight
+  - Awards points to task completer
+  - Updates user's `totalTareasRealizadas` and `totalTareasRealizadasHogar`
+  - Unassigns task (ready for next assignment)
+  - Sets `completada: false`
+
+**Example**:
+```typescript
+try {
+  await this.tareasService.valorarTarea(
+    taskId,
+    5,  // Excellent rating
+    '¡Excelente trabajo!',
+    currentUserId
+  );
+  console.log('Rating submitted');
+} catch (error) {
+  if (error.message === 'Ya has valorado esta tarea.') {
+    alert('You already rated this task');
+  }
+}
+```
+
+---
+
+## Task Requests
+
+### crearPeticionAsignacion()
+
+<ParamField path="crearPeticionAsignacion(data)" type="Promise<void>">
+  Creates a request for another user to take over a task.
+</ParamField>
+
+**Parameters**:
+<Expandable title="data object properties">
+  <ResponseField name="tareaId" type="string" required>
+    ID of the task
+  </ResponseField>
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+  <ResponseField name="deUid" type="string" required>
+    UID of requesting user
+  </ResponseField>
+  <ResponseField name="paraUid" type="string" required>
+    UID of target user
+  </ResponseField>
+</Expandable>
+
+**Throws**:
+- `'Datos incompletos para crear petición.'`: Missing required fields
+- `'La petición a uno mismo no es necesaria.'`: Cannot request from yourself
+
+**Example**:
+```typescript
+await this.tareasService.crearPeticionAsignacion({
+  tareaId: taskId,
+  hogarId: currentHogarId,
+  deUid: currentUserId,
+  paraUid: targetUserId
+});
+
+console.log('Request sent');
+```
+
+---
+
+### peticionesPendientesPara$()
+
+<ParamField path="peticionesPendientesPara$(uid)" type="Observable<PeticionAsignacionDTO[]>">
+  Returns pending task requests directed to a specific user.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="uid" type="string" required>
+    User ID
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<PeticionAsignacionDTO[]>`
+
+**Example**:
+```typescript
+this.tareasService.peticionesPendientesPara$(currentUid)
+  .subscribe(requests => {
+    console.log(`You have ${requests.length} pending requests`);
+  });
+```
+
+---
+
+### peticionesPendientesEnHogar$()
+
+<ParamField path="peticionesPendientesEnHogar$(hogarId)" type="Observable<PeticionAsignacionDTO[]>">
+  Returns all pending task requests in a home.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    Home ID
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<PeticionAsignacionDTO[]>`
+
+---
+
+### aceptarPeticion()
+
+<ParamField path="aceptarPeticion(peticionId)" type="Promise<void>">
+  Accepts a task request and reassigns the task to the acceptor.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="peticionId" type="string" required>
+    Request ID
+  </ResponseField>
+</Expandable>
+
+**Throws**:
+- `'Petición no encontrada'`: Request doesn't exist
+- `'La petición ya fue procesada.'`: Request already accepted/rejected
+- `'Tarea no encontrada'`: Task doesn't exist
+- `'No se puede reasignar hasta completar las valoraciones.'`: Task blocked by pending ratings
+- `'Usuario destino no encontrado'`: Acceptor user not found
+
+**Example**:
+```typescript
+await this.tareasService.aceptarPeticion(requestId);
+console.log('Request accepted, task reassigned');
+```
+
+---
+
+### rechazarPeticion()
+
+<ParamField path="rechazarPeticion(peticionId)" type="Promise<void>">
+  Rejects a task request.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="peticionId" type="string" required>
+    Request ID
+  </ResponseField>
+</Expandable>
+
+**Throws**:
+- `'Petición no encontrada'`: Request doesn't exist
+- `'La petición ya fue procesada.'`: Request already accepted/rejected
+
+**Example**:
+```typescript
+await this.tareasService.rechazarPeticion(requestId);
+console.log('Request rejected');
+```
+
+---
+
+### rechazosParaSolicitante$()
+
+<ParamField path="rechazosParaSolicitante$(uidSolicitante)" type="Observable<PeticionAsignacionDTO[]>">
+  Returns rejected requests for a specific requester that haven't been notified yet.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="uidSolicitante" type="string" required>
+    Requester's UID
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<PeticionAsignacionDTO[]>` - Unnotified rejections
+
+---
+
+### marcarRechazoNotificado()
+
+<ParamField path="marcarRechazoNotificado(peticionId)" type="Promise<void>">
+  Marks a rejection as notified to the requester.
+</ParamField>
+
+---
+
+### aceptadasParaSolicitante$()
+
+<ParamField path="aceptadasParaSolicitante$(uidSolicitante)" type="Observable<PeticionAsignacionDTO[]>">
+  Returns accepted requests for a requester that haven't been notified yet.
+</ParamField>
+
+---
+
+### marcarAceptacionNotificada()
+
+<ParamField path="marcarAceptacionNotificada(peticionId)" type="Promise<void>">
+  Marks an acceptance as notified to the requester.
+</ParamField>
+
+---
+
+## Member Exit Cleanup
+
+These methods are called by `HogarService` when a user leaves a home:
+
+### liberarTareasDeUsuarioQueSale()
+
+<ParamField path="liberarTareasDeUsuarioQueSale(hogarId, uid)" type="Promise<number>">
+  Unassigns all tasks assigned to a user leaving the home.
+</ParamField>
+
+**Returns**: Number of tasks released
+
+---
+
+### cancelarPeticionesPendientesDeUsuarioQueSale()
+
+<ParamField path="cancelarPeticionesPendientesDeUsuarioQueSale(hogarId, uid)" type="Promise<number>">
+  Cancels all pending task requests involving the leaving user.
+</ParamField>
+
+**Returns**: Number of requests cancelled
+
+---
+
+### limpiarValoracionesPendientesDeUsuarioQueSale()
+
+<ParamField path="limpiarValoracionesPendientesDeUsuarioQueSale(hogarId, uid)" type="Promise<number>">
+  Removes leaving user from pending raters lists.
+</ParamField>
+
+**Returns**: Number of tasks updated
+
+---
+
+### cancelarValoracionesDeTareasHechasPorUsuarioQueSale()
+
+<ParamField path="cancelarValoracionesDeTareasHechasPorUsuarioQueSale(hogarId, uid)" type="Promise<number>">
+  Cancels rating workflows for tasks completed by the leaving user.
+</ParamField>
+
+**Returns**: Number of tasks reset
+
+---
+
+## Types
+
+### Tarea Interface
+
+<Expandable title="Tarea Properties">
+  <ResponseField name="id" type="string">
+    Task ID
+  </ResponseField>
+  <ResponseField name="nombre" type="string">
+    Task name
+  </ResponseField>
+  <ResponseField name="descripcion" type="string">
+    Task description
+  </ResponseField>
+  <ResponseField name="completada" type="boolean">
+    Whether task is completed (awaiting ratings)
+  </ResponseField>
+  <ResponseField name="asignadA" type="string | null">
+    UID of assigned user
+  </ResponseField>
+  <ResponseField name="hogarId" type="string">
+    Home ID
+  </ResponseField>
+  <ResponseField name="peso" type="number">
+    Points multiplier (default: 1)
+  </ResponseField>
+  <ResponseField name="personalizada" type="boolean">
+    Custom task vs. default
+  </ResponseField>
+  <ResponseField name="historial" type="array">
+    Array of assignment/completion history entries
+  </ResponseField>
+  <ResponseField name="valoraciones" type="array">
+    Array of submitted ratings
+  </ResponseField>
+  <ResponseField name="valoracionesPendientes" type="string[]">
+    UIDs of users who need to rate
+  </ResponseField>
+  <ResponseField name="bloqueadaHastaValoracion" type="boolean">
+    Whether task is locked until all ratings submitted
+  </ResponseField>
+</Expandable>
+
+### TareaDTO Interface
+
+Extends `Tarea` with enriched assignee data:
+
+<Expandable title="Additional TareaDTO Properties">
+  <ResponseField name="asignadoNombre" type="string">
+    Assignee's display name
+  </ResponseField>
+  <ResponseField name="asignadoFotoURL" type="string">
+    Assignee's photo URL
+  </ResponseField>
+</Expandable>
+
+---
+
+## Constants
+
+### PUNTOS_POR_VALORACION
+
+Mapping from rating value to base points:
+
+```typescript
+const PUNTOS_POR_VALORACION = {
+  1: 5,
+  2: 10,
+  3: 15,
+  4: 20,
+  5: 25
+};
+```
+
+### PENALIZACION_ABANDONO
+
+Default penalty for abandoning in-progress tasks:
+
+```typescript
+const PENALIZACION_ABANDONO = -5;
+```
+
+---
+
+## Complete Example
+
+```typescript
+import { Component, OnInit } from '@angular/core';
+import { TareasService } from '@core/tareas/services/tareas.service';
+import { AuthService } from '@core/auth/auth.service';
+
+@Component({
+  selector: 'app-tasks',
+  template: `
+    <div *ngFor="let tarea of tareas$ | async">
+      <h3>{{ tarea.nombre }}</h3>
+      <p>{{ tarea.descripcion }}</p>
+      <p>Assigned to: {{ tarea.asignadoNombre || 'Unassigned' }}</p>
+      <p>Weight: {{ tarea.peso }}x</p>
+      
+      <button *ngIf="!tarea.asignadA" 
+              (click)="assignToMe(tarea.id!)">
+        Assign to me
+      </button>
+      
+      <button *ngIf="tarea.asignadA === currentUid" 
+              (click)="complete(tarea)">
+        Mark complete
+      </button>
+      
+      <button *ngIf="tarea.completada && needsMyRating(tarea)" 
+              (click)="rate(tarea.id!, 5, 'Great job!')">
+        Rate task
+      </button>
+    </div>
+    
+    <h3>My Points This Week: {{ puntosSemana$ | async }}</h3>
+  `
+})
+export class TasksComponent implements OnInit {
+  tareas$ = this.tareasService.getTareasPorHogar(this.hogarId);
+  puntosSemana$ = this.tareasService.getPuntosSemana(
+    this.hogarId,
+    this.currentUid
+  );
+  
+  hogarId = 'home-123';
+  currentUid = this.authService.uidActual!;
+
+  constructor(
+    private tareasService: TareasService,
+    private authService: AuthService
+  ) {}
+
+  ngOnInit() {
+    this.tareas$.subscribe(tareas => {
+      console.log('Tasks loaded:', tareas.length);
+    });
+  }
+
+  async assignToMe(tareaId: string) {
+    await this.tareasService.asignarTarea(tareaId, this.currentUid);
+  }
+
+  async complete(tarea: any) {
+    const user = this.authService.currentUser!;
+    const miembros = [{ uid: 'user1' }, { uid: 'user2' }];
+    
+    await this.tareasService.finalizarTareaConCancelacion(
+      tarea,
+      {
+        uid: user.uid,
+        displayName: user.displayName,
+        photoURL: user.photoURL
+      },
+      miembros
+    );
+  }
+
+  async rate(tareaId: string, rating: number, comment: string) {
+    await this.tareasService.valorarTarea(
+      tareaId,
+      rating,
+      comment,
+      this.currentUid
+    );
+  }
+
+  needsMyRating(tarea: any): boolean {
+    return tarea.valoracionesPendientes?.includes(this.currentUid) ?? false;
+  }
+}
+```
+
+---
+
+## See Also
+
+- [HogarService](/api/hogar-service)
+- [AuthService](/api/auth-service)
+- [NotificacionesService](/api/notificaciones-service)

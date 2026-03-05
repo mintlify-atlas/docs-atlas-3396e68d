@@ -1,0 +1,244 @@
+---
+title: Creating a Household
+description: Learn how to create and configure your first household in ZenHogar
+---
+
+## Overview
+
+Creating a household is the first step to start managing tasks with your family, roommates, or friends. This guide walks through the complete workflow from user interaction to database persistence.
+
+## User Workflow
+
+<Steps>
+  <Step title="Open the Create Household Dialog">
+    Users click on the "Create Household" button in the home screen, which opens the household creation dialog.
+    
+    The dialog (`DialogCrearHogarComponent`) presents a form with:
+    - Household name input
+    - Country selector (auto-detected from browser)
+    - Province/region autocomplete field
+    - Household type selector (Family, Couple, Friends, Erasmus)
+  </Step>
+
+  <Step title="Fill in Household Details">
+    Users provide the required information:
+    
+    **Household Name**: A descriptive name for the household (required)
+    
+    **Location**: Select country and province/region. The app uses geo-detection to suggest the user's location:
+    
+    ```typescript
+    // Auto-detect country from browser navigator
+    countryCode: CountryCode = (() => {
+      const raw = (detectCountryByNavigator() ?? 'ES').toUpperCase();
+      return (raw in SUBDIVISIONS ? raw : 'ES') as CountryCode;
+    })();
+    ```
+    
+    **Household Type**: Choose the type that best describes your living situation.
+  </Step>
+
+  <Step title="Submit and Create">
+    When the user clicks "Create", the dialog validates the form and returns the data:
+    
+    ```typescript
+    crear(): void {
+      const limpio = this.nombre.trim();
+      if (!limpio) return;
+      
+      const entrada = (this.provincia || this.provinciaInput).trim();
+      if (!entrada) return;
+      if (!this.tipoHogar) return;
+      
+      // Find matching province from the list
+      const prov = this.listaActual.find(p => this.equalsLoose(p.name, entrada));
+      if (!prov) return;
+      
+      this.ref.close({
+        nombre: limpio,
+        provincia: prov.name,
+        provinciaCode: prov.code,
+        countryCode: this.countryCode,
+        tipoHogar: this.tipoHogar,
+      });
+    }
+    ```
+  </Step>
+
+  <Step title="Backend Creates the Household">
+    The `HogarService.crearHogar()` method handles the creation:
+    
+    ```typescript
+    async crearHogar(
+      nombre: string,
+      provincia: string,
+      user: User,
+      provinciaCode?: string,
+      countryCode?: string,
+      tipoHogar?: TipoHogar,
+    ): Promise<{ id: string }> {
+      const cc = toCountryCode(countryCode ?? detectCountryByNavigator() ?? 'ES');
+      const code = provinciaCode ?? codeFromName(cc, provincia) ?? '';
+      
+      const docDataHogar: Omit<Hogar, 'id'> = {
+        nombre: nombre.trim(),
+        countryCode: cc,
+        provincia,
+        provinciaCode: code,
+        ownerUid: user.uid,
+        adminUid: user.uid,
+        miembros: [user.uid],
+        createdAt: serverTimestamp(),
+        tipoHogar: tipoHogar ?? 'Familiar',
+        zenPrime: false,
+      };
+      
+      // Create household document
+      const ref = await addDoc(collection(this.fs, 'hogares'), docDataHogar);
+      
+      // Add creator as first member
+      await setDoc(
+        doc(this.fs, `hogares/${ref.id}/miembros/${user.uid}`),
+        {
+          uid: user.uid,
+          email: (user.email ?? '').toLowerCase(),
+          joinedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+      
+      // Update user document
+      await setDoc(
+        doc(this.fs, `usuarios/${user.uid}`),
+        {
+          hogarId: ref.id,
+          totalTareasRealizadasHogar: 0,
+          actualizadoEn: serverTimestamp(),
+        },
+        { merge: true },
+      );
+      
+      // Create default tasks
+      await this.tareasSvc.crearTareasPorDefecto(ref.id, user.uid);
+      return { id: ref.id };
+    }
+    ```
+  </Step>
+
+  <Step title="Default Tasks Created">
+    After creating the household, the system automatically creates default tasks to help users get started:
+    
+    ```typescript
+    crearTareasPorDefecto(hogarId: string, adminUid: string) {
+      const batch = writeBatch(this.fs);
+      const colRef = collection(this.fs, 'tareas').withConverter(tareaConverter);
+      
+      TAREAS_POR_DEFECTO.forEach((t) => {
+        const ref = doc(colRef);
+        batch.set(ref, {
+          ...t,
+          hogarId,
+          creadorUid: adminUid,
+          createdAt: serverTimestamp(),
+        });
+      });
+      
+      return batch.commit();
+    }
+    ```
+    
+    These tasks include common household chores like cleaning, cooking, and shopping.
+  </Step>
+
+  <Step title="Confirmation">
+    The user is redirected to their new household dashboard where they can:
+    - View the default tasks
+    - Invite other members
+    - Start assigning and completing tasks
+  </Step>
+</Steps>
+
+## Data Model
+
+The household document structure in Firestore:
+
+```typescript
+export interface Hogar {
+  id?: string;
+  nombre: string;
+  countryCode: string;        // ISO country code (e.g., 'ES', 'MX')
+  provincia: string;           // Province/region name
+  provinciaCode: string;       // Province code for structured data
+  ownerUid: string;            // Administrator user ID
+  miembros: string[];          // Array of member UIDs
+  adminUid: string;            // Legacy admin field
+  createdAt: Timestamp | null;
+  tipoHogar?: TipoHogar;       // 'Familiar' | 'Pareja' | 'Amigos' | 'Erasmus'
+  zenPrime?: boolean;          // Premium features flag
+}
+```
+
+## Database Operations
+
+Creating a household involves four Firestore operations:
+
+1. **Create household document** in `/hogares/{hogarId}`
+2. **Create member subdocument** in `/hogares/{hogarId}/miembros/{uid}`
+3. **Update user document** in `/usuarios/{uid}` with household reference
+4. **Batch create default tasks** in `/tareas` collection
+
+<Note>
+  All operations use Firestore server timestamps to ensure accurate creation times regardless of client clock settings.
+</Note>
+
+## Key Features
+
+### Geo-Detection
+
+The app automatically detects the user's country from their browser settings:
+
+```typescript
+function detectCountryByNavigator(): string | null {
+  const lang = navigator.language || navigator.userLanguage;
+  const parts = lang.split('-');
+  return parts.length > 1 ? parts[1].toUpperCase() : null;
+}
+```
+
+### Province Validation
+
+Province autocomplete ensures data consistency by validating against a predefined list:
+
+```typescript
+get provinciasFiltradas(): readonly Subdivisiones[] {
+  if (!this.listaActual.length) return [];
+  const s = this.normalize(this.provinciaInput);
+  const base = s
+    ? this.listaActual.filter(p => this.normalize(p.name).includes(s))
+    : this.listaActual;
+  return [...base].sort((a, b) => this.collator.compare(a.name, b.name));
+}
+```
+
+<Warning>
+  Each user can only belong to one household at a time. If a user tries to create a new household while already belonging to one, they must leave their current household first.
+</Warning>
+
+## Error Handling
+
+Common errors and how they're handled:
+
+- **Missing required fields**: Form validation prevents submission
+- **Invalid province**: Autocomplete restricts to valid options
+- **User already in household**: Backend checks prevent duplicate memberships
+- **Network errors**: User-friendly error messages with retry options
+
+## Related Workflows
+
+- [Inviting Members](/guides/inviting-members) - Add people to your household
+- [Managing Tasks](/guides/managing-tasks) - Create and edit household tasks
+- [Task Assignment](/guides/task-assignment) - Assign tasks to members
+
+<Tip>
+  Choose a household type that matches your situation. This helps the app provide better suggestions and defaults for your use case.
+</Tip>

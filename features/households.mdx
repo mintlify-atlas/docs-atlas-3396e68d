@@ -1,0 +1,400 @@
+---
+title: Households (Hogares)
+description: Multi-user household management system in ZenHogar
+icon: house
+---
+
+## Overview
+
+The Household system (`HogarService` at `src/app/core/hogar/services/hogar.service.ts`) is the core organizational unit of ZenHogar. Each household contains members who collaborate on tasks, earn points, and share rewards.
+
+## Household Model
+
+Each household is represented by the `Hogar` interface:
+
+```typescript
+export interface Hogar {
+  id?: string;
+  nombre: string;
+  countryCode: string;           // Country code (e.g., 'ES', 'US')
+  provincia: string;             // Province/state name
+  provinciaCode: string;         // Province/state code
+  ownerUid: string;              // Administrator user ID
+  miembros: string[];            // Array of member UIDs
+  adminUid: string;              // Legacy admin field
+  createdAt: Timestamp | null;
+  tipoHogar?: TipoHogar;        // 'Familiar' | 'Pareja' | 'Amigos' | 'Erasmus'
+  zenPrime?: boolean;            // Premium subscription status
+}
+```
+
+## Creating a Household
+
+<Steps>
+  <Step title="Initialize Household Data">
+    The `crearHogar()` method accepts household details and creates a new household document:
+    
+    ```typescript
+    async crearHogar(
+      nombre: string,
+      provincia: string,
+      user: User,
+      provinciaCode?: string,
+      countryCode?: string,
+      tipoHogar?: TipoHogar
+    ): Promise<{ id: string }>
+    ```
+  </Step>
+  
+  <Step title="Country and Province Detection">
+    The system automatically detects the user's country and normalizes province codes:
+    
+    ```typescript
+    const cc = toCountryCode(countryCode ?? detectCountryByNavigator() ?? 'ES');
+    const code = provinciaCode ?? codeFromName(cc, provincia) ?? '';
+    ```
+  </Step>
+  
+  <Step title="Create Household Document">
+    A new household document is created in Firestore with the creator as the owner and first member:
+    
+    ```typescript
+    const docDataHogar: Omit<Hogar, 'id'> = {
+      nombre: nombre.trim(),
+      countryCode: cc,
+      provincia,
+      provinciaCode: code,
+      ownerUid: user.uid,
+      adminUid: user.uid,
+      miembros: [user.uid],
+      createdAt: serverTimestamp(),
+      tipoHogar: tipoHogar ?? 'Familiar',
+      zenPrime: false,
+    };
+    ```
+  </Step>
+  
+  <Step title="Initialize Member Subcollection">
+    A member document is created in the `miembros` subcollection:
+    
+    ```typescript
+    await setDoc(
+      doc(this.fs, `hogares/${ref.id}/miembros/${user.uid}`),
+      {
+        uid: user.uid,
+        email: (user.email ?? '').toLowerCase(),
+        joinedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+    ```
+  </Step>
+  
+  <Step title="Link User to Household">
+    The user's profile is updated with the household ID and reset task counters:
+    
+    ```typescript
+    await setDoc(
+      doc(this.fs, `usuarios/${user.uid}`),
+      {
+        hogarId: ref.id,
+        totalTareasRealizadasHogar: 0,
+        actualizadoEn: serverTimestamp(),
+      },
+      { merge: true }
+    );
+    ```
+  </Step>
+  
+  <Step title="Create Default Tasks">
+    The system automatically creates a set of default tasks for the new household:
+    
+    ```typescript
+    await this.tareasSvc.crearTareasPorDefecto(ref.id, user.uid);
+    ```
+  </Step>
+</Steps>
+
+## Household State Stream
+
+The service provides a reactive observable that tracks the current user's household:
+
+```typescript
+getHogarState$(): Observable<Hogar | null | undefined>
+```
+
+This observable:
+- Returns `undefined` while loading
+- Returns `null` if the user has no household
+- Returns the `Hogar` object if the user belongs to a household
+
+<Note>
+  The stream uses `shareReplay` to ensure all subscribers receive the same data without duplicate Firestore queries.
+</Note>
+
+## Leaving a Household
+
+The `salirDeHogar()` method handles the complex process of removing a user from a household:
+
+<Steps>
+  <Step title="Validation">
+    - Verify user is authenticated
+    - Check household exists
+    - **Prevent admin from leaving** (must transfer ownership first)
+    
+    ```typescript
+    const ownerUid: string = d.ownerUid || d.adminUid;
+    if (ownerUid === uid) throw new Error('ADMIN_MUST_TRANSFER');
+    ```
+  </Step>
+  
+  <Step title="Record Historical Data">
+    Save the user's contribution history before leaving:
+    
+    ```typescript
+    await this.registrarHistoricoSalidaUsuario(
+      hogarId,
+      uid,
+      nombreHogar,
+      ownerUid
+    );
+    ```
+  </Step>
+  
+  <Step title="Clean Up Tasks">
+    Release all tasks assigned to the departing user:
+    
+    ```typescript
+    await this.tareasSvc.liberarTareasDeUsuarioQueSale(hogarId, uid);
+    await this.tareasSvc.cancelarPeticionesPendientesDeUsuarioQueSale(hogarId, uid);
+    await this.tareasSvc.limpiarValoracionesPendientesDeUsuarioQueSale(hogarId, uid);
+    ```
+  </Step>
+  
+  <Step title="Reset User Profile">
+    Reset the user's points and household association:
+    
+    ```typescript
+    await setDoc(
+      userRef,
+      {
+        puntos: 0,
+        hogarId: null,
+        totalTareasRealizadasHogar: 0,
+        actualizadoEn: serverTimestamp(),
+      },
+      { merge: true }
+    );
+    ```
+  </Step>
+  
+  <Step title="Remove from Household">
+    Remove the user from the household's member array using a transaction:
+    
+    ```typescript
+    tx.update(hogarRef, {
+      miembros: arrayRemove(uid),
+      actualizadoEn: serverTimestamp(),
+    });
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  When a user leaves a household, their points are reset to zero and cannot be recovered.
+</Warning>
+
+## Transferring Ownership
+
+Admins can transfer ownership to another member using `transferirAdmin()`:
+
+```typescript
+async transferirAdmin(hogarId: string, nuevoAdminUid: string): Promise<void>
+```
+
+### Transfer Validation
+
+<Accordion title="Security Checks">
+  The method performs several security validations:
+  
+  ```typescript
+  // Current user must be the owner
+  if (ownerUid !== user.uid) throw new Error('NOT_ADMIN');
+  
+  // Cannot transfer to self
+  if (nuevoAdminUid === user.uid) throw new Error('CANNOT_TRANSFER_TO_SELF');
+  
+  // New admin must be a member
+  const esMiembroDestino = miembros.some((m) =>
+    typeof m === 'string' ? m === nuevoAdminUid : m?.uid === nuevoAdminUid
+  );
+  if (!esMiembroDestino) throw new Error('USER_NOT_MEMBER');
+  ```
+</Accordion>
+
+### Transfer Process
+
+The transfer is executed in a Firestore transaction:
+
+```typescript
+tx.update(hogarRef, {
+  ownerUid: nuevoAdminUid,
+  adminUid: nuevoAdminUid,
+  actualizadoEn: serverTimestamp(),
+});
+
+// Record the transfer event
+const eventoRef = doc(eventosCol);
+tx.set(eventoRef, {
+  tipo: 'TRANSFER_ADMIN',
+  de: user.uid,
+  a: nuevoAdminUid,
+  ts: serverTimestamp(),
+});
+```
+
+## Deleting a Household
+
+The `eliminarHogar()` method performs a comprehensive cleanup:
+
+<Steps>
+  <Step title="Authorization Check">
+    Only the owner can delete the household:
+    
+    ```typescript
+    if (ownerUid !== user.uid) throw new Error('NOT_ADMIN');
+    ```
+  </Step>
+  
+  <Step title="Archive Historical Data">
+    Save historical data for all members before deletion:
+    
+    ```typescript
+    await this.registrarHistoricoHogar(
+      hogarId,
+      miembros,
+      nombreHogar,
+      ownerUid
+    );
+    ```
+  </Step>
+  
+  <Step title="Email Notifications">
+    Notify all members about the household deletion:
+    
+    ```typescript
+    await this.notificarEliminacionHogar(
+      nombreHogar,
+      miembros,
+      adminNombre
+    );
+    ```
+  </Step>
+  
+  <Step title="Delete Tasks in Batches">
+    Remove all tasks associated with the household (max 450 per batch):
+    
+    ```typescript
+    for (let i = 0; i < tareasDocs.length; i += 450) {
+      const slice = tareasDocs.slice(i, i + 450);
+      const batch = writeBatch(this.fs);
+      slice.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+    ```
+  </Step>
+  
+  <Step title="Delete Subcollections">
+    Remove all subcollections:
+    - `eventos` (events)
+    - `miembros` (members)
+    - `notificaciones` (notifications)
+    - `recompensasPersonalizadas` (custom rewards)
+  </Step>
+  
+  <Step title="Reset Member Profiles">
+    Reset points and household associations for all members:
+    
+    ```typescript
+    batch.set(
+      uref,
+      {
+        puntos: 0,
+        hogarId: null,
+        totalTareasRealizadasHogar: 0,
+        actualizadoEn: serverTimestamp(),
+      },
+      { merge: true }
+    );
+    ```
+  </Step>
+  
+  <Step title="Delete Related Collections">
+    Clean up invitations and assignment requests:
+    
+    ```typescript
+    await this.deleteByFieldEq('peticionesAsignacion', 'hogarId', hogarId);
+    await this.deleteByFieldEq('invitaciones', 'hogarId', hogarId);
+    ```
+  </Step>
+  
+  <Step title="Delete Household Document">
+    Finally, delete the household document in a transaction to ensure the owner hasn't changed:
+    
+    ```typescript
+    tx.delete(hogarRef);
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Household deletion is **permanent and irreversible**. All tasks, points, and household data are permanently deleted.
+</Warning>
+
+## Household Types
+
+ZenHogar supports different household types to customize the experience:
+
+<CardGroup cols={2}>
+  <Card title="Familiar" icon="home">
+    Family households with parents and children
+  </Card>
+  <Card title="Pareja" icon="heart">
+    Couples living together
+  </Card>
+  <Card title="Amigos" icon="users">
+    Friends sharing a living space
+  </Card>
+  <Card title="Erasmus" icon="graduation-cap">
+    Student roommates and exchange students
+  </Card>
+</CardGroup>
+
+## Historical Data
+
+When users leave or households are deleted, the system preserves historical data:
+
+```typescript
+interface HistorialHogar {
+  hogarId: string;
+  hogarNombre: string;
+  tareasRealizadas: number;
+  fechaSalida: Timestamp;
+  fueAdmin: boolean;
+}
+```
+
+This data is stored in `usuarios/{uid}/historialHogares/{hogarId}` and tracks:
+- Number of tasks completed in that household
+- Whether the user was an admin
+- When they left the household
+
+## ZenPrime Status
+
+Households can have a `zenPrime` boolean flag for premium features:
+
+```typescript
+zenPrime?: boolean;
+```
+
+This flag controls access to premium rewards and features throughout the application.

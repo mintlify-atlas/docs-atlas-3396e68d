@@ -1,0 +1,407 @@
+---
+title: 'HogarService'
+description: 'Manages home creation, membership, admin operations, and home lifecycle'
+icon: 'house'
+---
+
+## Overview
+
+The `HogarService` is the core service for managing homes (hogares) in ZenHogar. It handles home creation, member management, admin transfers, home deletion, and observables for reactive home state.
+
+**Location**: `src/app/core/hogar/services/hogar.service.ts`
+
+**Injectable**: `{ providedIn: 'root' }`
+
+---
+
+## Observables
+
+### getHogarState$()
+
+<ParamField path="getHogarState$()" type="Observable<Hogar | null | undefined>">
+  Returns a reactive stream of the current user's home state.
+</ParamField>
+
+**Returns**:
+- `undefined`: Initial loading state
+- `null`: User has no home
+- `Hogar`: User's home data
+
+**Features**:
+- Automatically switches when user authentication changes
+- Handles permission denied and not-found errors gracefully
+- Uses `shareReplay({ bufferSize: 1, refCount: true })` for efficient subscription sharing
+- Audits time to prevent rapid emissions
+
+**Example**:
+```typescript
+this.hogarService.getHogarState$().subscribe(hogar => {
+  if (hogar === undefined) {
+    console.log('Loading...');
+  } else if (hogar === null) {
+    console.log('No home assigned');
+  } else {
+    console.log('Home:', hogar.nombre);
+  }
+});
+```
+
+---
+
+### getHogar$()
+
+<ParamField path="getHogar$()" type="Observable<Hogar | null>">
+  Simplified stream that returns the user's home or `null`. Does not emit `undefined`.
+</ParamField>
+
+**Returns**: `Observable<Hogar | null>`
+
+**Example**:
+```typescript
+this.hogarService.getHogar$().subscribe(hogar => {
+  if (hogar) {
+    console.log('Members:', hogar.miembros.length);
+    console.log('Owner:', hogar.ownerUid);
+  }
+});
+```
+
+---
+
+## Home Creation
+
+### crearHogar()
+
+<ParamField path="crearHogar(nombre, provincia, user, provinciaCode?, countryCode?, tipoHogar?)" type="Promise<{ id: string }>">
+  Creates a new home with the current user as owner and initializes default tasks.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="nombre" type="string" required>
+    Name of the home
+  </ResponseField>
+  <ResponseField name="provincia" type="string" required>
+    Province or state name
+  </ResponseField>
+  <ResponseField name="user" type="User" required>
+    Firebase User object of the home creator
+  </ResponseField>
+  <ResponseField name="provinciaCode" type="string">
+    Province/state code (auto-detected if not provided)
+  </ResponseField>
+  <ResponseField name="countryCode" type="string">
+    Country code (defaults to 'ES', auto-detected from browser)
+  </ResponseField>
+  <ResponseField name="tipoHogar" type="TipoHogar">
+    Home type: 'Familiar', 'Pareja', 'Amigos', or 'Erasmus' (defaults to 'Familiar')
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Promise<{ id: string }>` - Object containing the new home's ID
+
+**Side Effects**:
+- Creates home document in `hogares/{id}`
+- Adds creator to `hogares/{id}/miembros/{uid}`
+- Updates user's `hogarId` in `usuarios/{uid}`
+- Creates default tasks via `TareasService.crearTareasPorDefecto()`
+
+**Example**:
+```typescript
+import { Auth } from '@angular/fire/auth';
+
+const user = this.auth.currentUser;
+if (!user) throw new Error('Not authenticated');
+
+const result = await this.hogarService.crearHogar(
+  'Mi Casa',
+  'Madrid',
+  user,
+  'M',
+  'ES',
+  'Familiar'
+);
+
+console.log('Home created with ID:', result.id);
+```
+
+---
+
+## Member Management
+
+### salirDeHogar()
+
+<ParamField path="salirDeHogar(hogarId)" type="Promise<void>">
+  Removes the current user from a home. Admin users cannot leave without transferring ownership.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home to leave
+  </ResponseField>
+</Expandable>
+
+**Throws**:
+- `'Debes iniciar sesión'`: No authenticated user
+- `'Hogar no encontrado'`: Home doesn't exist
+- `'ADMIN_MUST_TRANSFER'`: Admin must transfer ownership before leaving
+
+**Side Effects**:
+- Records exit in user's `historialHogares` subcollection
+- Releases all assigned tasks via `TareasService.liberarTareasDeUsuarioQueSale()`
+- Cancels pending task requests
+- Clears pending ratings
+- Resets user's points and `hogarId` to `null`
+- Removes user from home's `miembros` array
+
+**Example**:
+```typescript
+try {
+  await this.hogarService.salirDeHogar(currentHogarId);
+  this.router.navigate(['/welcome']);
+} catch (error) {
+  if (error.message === 'ADMIN_MUST_TRANSFER') {
+    alert('You must transfer admin rights before leaving');
+  }
+}
+```
+
+---
+
+## Admin Operations
+
+### transferirAdmin()
+
+<ParamField path="transferirAdmin(hogarId, nuevoAdminUid)" type="Promise<void>">
+  Transfers home ownership and admin rights to another member.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+  <ResponseField name="nuevoAdminUid" type="string" required>
+    UID of the new admin (must be a current member)
+  </ResponseField>
+</Expandable>
+
+**Throws**:
+- `'Debes iniciar sesión'`: No authenticated user
+- `'HOGAR_ID_REQUERIDO'`: Missing home ID
+- `'UID_DESTINO_REQUERIDO'`: Missing target UID
+- `'Hogar no encontrado'`: Home doesn't exist
+- `'NOT_ADMIN'`: Current user is not the admin
+- `'CANNOT_TRANSFER_TO_SELF'`: Cannot transfer to yourself
+- `'USER_NOT_MEMBER'`: Target user is not a member
+
+**Side Effects**:
+- Updates `ownerUid` and `adminUid` in home document
+- Creates transfer event in `hogares/{id}/eventos`
+
+**Example**:
+```typescript
+try {
+  await this.hogarService.transferirAdmin(hogarId, newAdminUid);
+  console.log('Admin rights transferred successfully');
+} catch (error) {
+  if (error.message === 'NOT_ADMIN') {
+    alert('Only the admin can transfer ownership');
+  }
+}
+```
+
+---
+
+### eliminarHogar()
+
+<ParamField path="eliminarHogar(hogarId)" type="Promise<void>">
+  Permanently deletes a home and all associated data. Only the admin can perform this operation.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home to delete
+  </ResponseField>
+</Expandable>
+
+**Throws**:
+- `'Debes iniciar sesión'`: No authenticated user
+- `'HOGAR_ID_REQUERIDO'`: Missing home ID
+- `'Hogar no encontrado'`: Home doesn't exist
+- `'NOT_ADMIN'`: Current user is not the admin
+
+**Side Effects** (executed in order):
+1. Records home history in each member's `historialHogares` subcollection
+2. Sends deletion notification emails to all members
+3. Deletes all tasks with matching `hogarId` (in batches of 450)
+4. Deletes subcollections: `eventos`, `miembros`, `notificaciones`, `recompensasPersonalizadas`
+5. Resets all members' points and `hogarId` to `null`
+6. Deletes related documents in `peticionesAsignacion` and `invitaciones`
+7. Deletes the home document
+
+**Example**:
+```typescript
+const confirmDelete = confirm('Are you sure? This cannot be undone.');
+
+if (confirmDelete) {
+  try {
+    await this.hogarService.eliminarHogar(hogarId);
+    this.router.navigate(['/welcome']);
+  } catch (error) {
+    console.error('Failed to delete home:', error);
+  }
+}
+```
+
+---
+
+## Types
+
+### Hogar Interface
+
+<Expandable title="Hogar Properties">
+  <ResponseField name="id" type="string">
+    Home document ID
+  </ResponseField>
+  <ResponseField name="nombre" type="string">
+    Home name
+  </ResponseField>
+  <ResponseField name="countryCode" type="string">
+    ISO country code (e.g., 'ES', 'US')
+  </ResponseField>
+  <ResponseField name="provincia" type="string">
+    Province or state name
+  </ResponseField>
+  <ResponseField name="provinciaCode" type="string">
+    Province/state code
+  </ResponseField>
+  <ResponseField name="ownerUid" type="string">
+    UID of the home owner/admin
+  </ResponseField>
+  <ResponseField name="miembros" type="string[]">
+    Array of member UIDs
+  </ResponseField>
+  <ResponseField name="createdAt" type="Timestamp | null">
+    Home creation timestamp
+  </ResponseField>
+  <ResponseField name="tipoHogar" type="TipoHogar">
+    Home type: 'Familiar', 'Pareja', 'Amigos', or 'Erasmus'
+  </ResponseField>
+  <ResponseField name="zenPrime" type="boolean">
+    Premium subscription status
+  </ResponseField>
+</Expandable>
+
+### TipoHogar Type
+
+```typescript
+type TipoHogar = 'Familiar' | 'Pareja' | 'Amigos' | 'Erasmus';
+```
+
+---
+
+## Error Handling
+
+The service includes robust error handling:
+- **Permission denied**: Treated as "no home" in observables
+- **Not found**: Gracefully handled as null
+- **Admin restrictions**: Explicit error codes for admin-only operations
+- **Batch operations**: Continues on subcollection deletion errors with console warnings
+
+---
+
+## Complete Example
+
+```typescript
+import { Component, OnInit } from '@angular/core';
+import { HogarService } from '@core/hogar/services/hogar.service';
+import { Auth } from '@angular/fire/auth';
+
+@Component({
+  selector: 'app-home-manager',
+  template: `
+    <div *ngIf="hogar$ | async as hogar; else noHome">
+      <h2>{{ hogar.nombre }}</h2>
+      <p>Members: {{ hogar.miembros.length }}</p>
+      <p>Type: {{ hogar.tipoHogar }}</p>
+      
+      <button *ngIf="isAdmin(hogar)" 
+              (click)="deleteHome(hogar.id!)"
+              class="danger">
+        Delete Home
+      </button>
+      
+      <button *ngIf="!isAdmin(hogar)" 
+              (click)="leaveHome(hogar.id!)">
+        Leave Home
+      </button>
+    </div>
+    
+    <ng-template #noHome>
+      <button (click)="createHome()">Create New Home</button>
+    </ng-template>
+  `
+})
+export class HomeManagerComponent implements OnInit {
+  hogar$ = this.hogarService.getHogar$();
+
+  constructor(
+    private hogarService: HogarService,
+    private auth: Auth
+  ) {}
+
+  ngOnInit() {
+    this.hogar$.subscribe(hogar => {
+      console.log('Current home:', hogar);
+    });
+  }
+
+  async createHome() {
+    const user = this.auth.currentUser;
+    if (!user) return;
+
+    const result = await this.hogarService.crearHogar(
+      'My Home',
+      'Madrid',
+      user,
+      undefined,
+      'ES',
+      'Familiar'
+    );
+    
+    console.log('Created home:', result.id);
+  }
+
+  async leaveHome(hogarId: string) {
+    try {
+      await this.hogarService.salirDeHogar(hogarId);
+    } catch (error) {
+      if (error.message === 'ADMIN_MUST_TRANSFER') {
+        alert('Transfer admin rights before leaving');
+      }
+    }
+  }
+
+  async deleteHome(hogarId: string) {
+    const confirm = window.confirm('Delete home permanently?');
+    if (confirm) {
+      await this.hogarService.eliminarHogar(hogarId);
+    }
+  }
+
+  isAdmin(hogar: any): boolean {
+    return hogar.ownerUid === this.auth.currentUser?.uid;
+  }
+}
+```
+
+---
+
+## See Also
+
+- [TareasService](/api/tareas-service)
+- [InvitacionesService](/api/invitaciones-service)
+- [AuthService](/api/auth-service)

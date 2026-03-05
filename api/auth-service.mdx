@@ -1,0 +1,243 @@
+---
+title: 'AuthService'
+description: 'Manages user authentication, session state, and user profile data'
+icon: 'shield-halved'
+---
+
+## Overview
+
+The `AuthService` handles all authentication operations including Google sign-in, session management, and user profile retrieval. It provides reactive streams for authentication state and user data using RxJS observables.
+
+**Location**: `src/app/core/auth/auth.service.ts`
+
+**Injectable**: `{ providedIn: 'root' }`
+
+---
+
+## Properties
+
+### user$
+
+<ParamField path="user$" type="Observable<User | null>">
+  Stream of the current Firebase authentication state. Emits the authenticated user or `null` when signed out.
+  
+  Uses `shareReplay({ bufferSize: 1, refCount: true })` to cache the latest value.
+</ParamField>
+
+### uidActual
+
+<ParamField path="uidActual" type="string | null">
+  The current user's UID. Updated automatically when `user$` emits. `null` when no user is authenticated.
+</ParamField>
+
+### usuarioCompleto$
+
+<ParamField path="usuarioCompleto$" type="Observable<Usuario | null>">
+  Stream of the complete user profile from Firestore. Emits the full `Usuario` object with extended profile information.
+  
+  Automatically switches to the user's Firestore document when authentication state changes.
+</ParamField>
+
+### currentUser
+
+<ParamField path="currentUser" type="User | null" getter>
+  Synchronous getter that returns the current Firebase `User` object from `Auth.currentUser`.
+</ParamField>
+
+---
+
+## Methods
+
+### loginGoogle()
+
+<ParamField path="loginGoogle()" type="Promise<void>">
+  Initiates Google OAuth sign-in flow using popup. Creates or updates user profile in Firestore.
+</ParamField>
+
+**Behavior**:
+- Opens Google sign-in popup
+- Creates new user document in `usuarios/{uid}` if first login
+- Updates `displayName`, `email`, `photoURL`, and `lastLogin` on each login
+- Sets `hogarId: null` for new users
+- Handles cancellation gracefully (codes: `auth/cancelled-popup-request`, `auth/popup-closed-by-user`)
+- Prevents concurrent login attempts with internal flag
+
+**Returns**: `Promise<void>`
+
+**Throws**: Error if sign-in fails (except for user cancellation)
+
+**Example**:
+```typescript
+import { AuthService } from '@core/auth/auth.service';
+
+@Component({ ... })
+export class LoginComponent {
+  constructor(private authService: AuthService) {}
+
+  async signIn() {
+    try {
+      await this.authService.loginGoogle();
+      console.log('Successfully signed in');
+    } catch (error) {
+      console.error('Sign-in failed:', error);
+    }
+  }
+}
+```
+
+---
+
+### logout()
+
+<ParamField path="logout()" type="Promise<void>">
+  Signs out the current user from Firebase Authentication.
+</ParamField>
+
+**Returns**: `Promise<void>`
+
+**Example**:
+```typescript
+async signOut() {
+  await this.authService.logout();
+  console.log('Signed out successfully');
+}
+```
+
+---
+
+### getUsuarioPublico$()
+
+<ParamField path="getUsuarioPublico$(uid: string)" type="Observable<UsuarioPublico | null>">
+  Retrieves public profile information for a specific user.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="uid" type="string" required>
+    The user ID to retrieve public profile for
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<UsuarioPublico | null>`
+
+<Expandable title="UsuarioPublico Type">
+  <ResponseField name="displayName" type="string | null">
+    User's display name
+  </ResponseField>
+  <ResponseField name="photoURL" type="string | null">
+    URL to user's profile photo
+  </ResponseField>
+</Expandable>
+
+**Example**:
+```typescript
+this.authService.getUsuarioPublico$(memberId).subscribe(profile => {
+  if (profile) {
+    console.log('User name:', profile.displayName);
+    console.log('Photo:', profile.photoURL);
+  }
+});
+```
+
+---
+
+## Usage Example
+
+```typescript
+import { Component, OnInit } from '@angular/core';
+import { AuthService } from '@core/auth/auth.service';
+import { Usuario } from '@core/usuarios/models/usuario.model';
+
+@Component({
+  selector: 'app-profile',
+  template: `
+    <div *ngIf="user$ | async as user">
+      <h1>Welcome, {{ user.displayName }}</h1>
+      <img [src]="user.photoURL" alt="Profile">
+      <button (click)="signOut()">Sign Out</button>
+    </div>
+    
+    <div *ngIf="usuarioCompleto$ | async as usuario">
+      <p>Home ID: {{ usuario.hogarId }}</p>
+      <p>Points: {{ usuario.puntos }}</p>
+      <p>Tasks completed: {{ usuario.totalTareasRealizadas }}</p>
+    </div>
+  `
+})
+export class ProfileComponent implements OnInit {
+  user$ = this.authService.user$;
+  usuarioCompleto$ = this.authService.usuarioCompleto$;
+
+  constructor(private authService: AuthService) {}
+
+  ngOnInit() {
+    // Subscribe to get current UID
+    this.authService.user$.subscribe(user => {
+      console.log('Current UID:', this.authService.uidActual);
+    });
+  }
+
+  async signOut() {
+    await this.authService.logout();
+  }
+}
+```
+
+---
+
+## Related Types
+
+### Usuario
+
+Extended user profile stored in Firestore:
+
+<Expandable title="Usuario Interface">
+  <ResponseField name="uid" type="string">
+    User's unique identifier
+  </ResponseField>
+  <ResponseField name="nombre" type="string">
+    User's display name
+  </ResponseField>
+  <ResponseField name="email" type="string">
+    User's email address
+  </ResponseField>
+  <ResponseField name="photoURL" type="string">
+    Profile photo URL
+  </ResponseField>
+  <ResponseField name="hogarId" type="string | null">
+    ID of the home the user belongs to
+  </ResponseField>
+  <ResponseField name="puntos" type="number">
+    User's points balance
+  </ResponseField>
+  <ResponseField name="totalTareasRealizadas" type="number">
+    Total tasks completed across all homes
+  </ResponseField>
+</Expandable>
+
+---
+
+## Error Handling
+
+The service handles several authentication error scenarios:
+
+- **Popup cancellation**: Errors with codes `auth/cancelled-popup-request` or `auth/popup-closed-by-user` are caught and ignored
+- **Firestore errors**: Observable streams catch errors and return `null` while logging to console
+- **Concurrent logins**: Internal flag prevents multiple simultaneous login attempts
+
+---
+
+## Firebase Integration
+
+The service integrates with:
+- **@angular/fire/auth**: For authentication state management
+- **@angular/fire/firestore**: For user profile storage
+- **Firebase collections**: `usuarios/{uid}`
+
+---
+
+## See Also
+
+- [Usuario Model](/api/usuario-model)
+- [HogarService](/api/hogar-service)
+- [Firebase Auth Documentation](https://firebase.google.com/docs/auth)

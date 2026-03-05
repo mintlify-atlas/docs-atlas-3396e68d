@@ -1,0 +1,445 @@
+---
+title: Points System
+description: Gamified point earning and reward redemption system
+icon: trophy
+---
+
+## Overview
+
+ZenHogar's points system (`TiendaService` at `src/app/core/tienda/services/tienda.service.ts`) gamifies household chores by allowing users to earn points through task completion and spend them on rewards.
+
+## How Points Are Earned
+
+Points are awarded when tasks are completed and peer-reviewed. See [Tasks](/features/tasks#points-system) for the complete rating and point calculation system.
+
+### Point Values by Rating
+
+| Rating | Base Points | Description |
+|--------|-------------|-------------|
+| ⭐⭐⭐⭐⭐ (5) | +10 | Excellent work |
+| ⭐⭐⭐⭐ (4) | +5 | Good job |
+| ⭐⭐⭐ (3) | +2 | Acceptable |
+| ⭐⭐ (2) | -5 | Poor quality |
+| ⭐ (1) | -10 | Very poor |
+
+<Note>
+  Points can be negative for poor-quality work, encouraging high standards.
+</Note>
+
+### Task Weight Multiplier
+
+Tasks can have a `peso` (weight) that multiplies the base points:
+
+```typescript
+const puntosOtorgados = basePoints * tarea.peso;
+```
+
+For example:
+- A 5-star task with weight 2: `10 × 2 = 20 points`
+- A 3-star task with weight 3: `2 × 3 = 6 points`
+
+### Penalties
+
+<Warning>
+  Abandoning a task in progress results in a **-150 point penalty** (`PENALIZACION_ABANDONO`).
+</Warning>
+
+## User Point Balance
+
+User points are stored in the `usuarios` collection:
+
+```typescript
+export interface Usuario {
+  uid: string;
+  puntos?: number;  // Current point balance
+  // ... other fields
+}
+```
+
+Points are updated atomically using Firestore's `increment()` operation:
+
+```typescript
+await updateDoc(usuarioRef, {
+  puntos: increment(puntosOtorgados),
+  totalTareasRealizadas: increment(1),
+  totalTareasRealizadasHogar: increment(1),
+  actualizadoEn: serverTimestamp(),
+});
+```
+
+## Reward Model
+
+Rewards are represented by the `Recompensa` interface:
+
+```typescript
+export type TipoRecompensa = 'predefinida' | 'personalizada';
+
+export interface Recompensa {
+  id: string;
+  titulo: string;
+  descripcion: string;
+  coste: number;              // Points required
+  icono: string;              // Icon identifier
+  tipo: TipoRecompensa;
+  soloZenPrime?: boolean;     // Requires premium subscription
+  badge?: 'popular' | 'top';  // Display badge
+}
+```
+
+## Redeeming Rewards
+
+The `canjearRecompensa()` method handles point spending:
+
+```typescript
+async canjearRecompensa(
+  usuarioId: string,
+  puntosGastados: number,
+  recompensa: Recompensa
+): Promise<void> {
+  const usuarioRef = doc(this.fs, `usuarios/${usuarioId}`);
+  const canjeosRef = collection(this.fs, `usuarios/${usuarioId}/canjeos`);
+  
+  return runTransaction(this.fs, async (tx) => {
+    const snap = await tx.get(usuarioRef);
+    if (!snap.exists()) {
+      throw new Error('Usuario no encontrado');
+    }
+    
+    const datos = snap.data() as any;
+    const puntosActuales = datos.puntos ?? 0;
+    
+    if (puntosActuales < puntosGastados) {
+      throw new Error('No tienes suficientes puntos');
+    }
+    
+    // Deduct points
+    tx.update(usuarioRef, {
+      puntos: puntosActuales - puntosGastados
+    });
+    
+    // Save redemption history
+    const canjeoRef = doc(canjeosRef);
+    tx.set(canjeoRef, {
+      recompensaId: recompensa.id,
+      titulo: recompensa.titulo,
+      puntosGastados,
+      tipo: recompensa.tipo,
+      fecha: new Date()
+    });
+  });
+}
+```
+
+<Steps>
+  <Step title="Start Transaction">
+    Use a Firestore transaction to ensure atomic point deduction and history recording.
+  </Step>
+  
+  <Step title="Verify Sufficient Points">
+    Check that the user has enough points:
+    
+    ```typescript
+    if (puntosActuales < puntosGastados) {
+      throw new Error('No tienes suficientes puntos');
+    }
+    ```
+  </Step>
+  
+  <Step title="Deduct Points">
+    Subtract the cost from the user's balance:
+    
+    ```typescript
+    tx.update(usuarioRef, {
+      puntos: puntosActuales - puntosGastados
+    });
+    ```
+  </Step>
+  
+  <Step title="Record Redemption">
+    Save the redemption to the user's `canjeos` subcollection:
+    
+    ```typescript
+    tx.set(canjeoRef, {
+      recompensaId: recompensa.id,
+      titulo: recompensa.titulo,
+      puntosGastados,
+      tipo: recompensa.tipo,
+      fecha: new Date()
+    });
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Transactions ensure that if any step fails, no points are deducted and no history is recorded.
+</Note>
+
+## Custom Rewards
+
+Households can create personalized rewards stored in a subcollection:
+
+### Creating Custom Rewards
+
+```typescript
+crearRecompensaPersonalizada(hogarId: string, data: any): Promise<any> {
+  const colRef = collection(this.fs, `hogares/${hogarId}/recompensasPersonalizadas`);
+  const docRef = doc(colRef);
+  const toSave = { ...data, id: docRef.id };
+  
+  return setDoc(docRef, toSave).then(() => toSave);
+}
+```
+
+### Fetching Custom Rewards
+
+```typescript
+getRecompensasPersonalizadas(hogarId: string): Observable<Recompensa[]> {
+  const ref = collection(this.fs, `hogares/${hogarId}/recompensasPersonalizadas`);
+  return collectionData(ref, { idField: 'id' }) as Observable<Recompensa[]>;
+}
+```
+
+### Updating Custom Rewards
+
+```typescript
+async actualizarRecompensaPersonalizada(
+  hogarId: string,
+  recompensaId: string,
+  changes: any
+): Promise<void> {
+  const ref = doc(this.fs, `hogares/${hogarId}/recompensasPersonalizadas/${recompensaId}`);
+  await updateDoc(ref, changes);
+}
+```
+
+### Deleting Custom Rewards
+
+```typescript
+async borrarRecompensaPersonalizada(hogarId: string, recompensaId: string): Promise<void> {
+  const ref = doc(this.fs, `hogares/${hogarId}/recompensasPersonalizadas/${recompensaId}`);
+  await deleteDoc(ref);
+}
+```
+
+<Note>
+  Custom rewards are stored per-household, allowing each household to define rewards relevant to their situation (e.g., "Choose tonight's dinner", "Skip dish duty this week").
+</Note>
+
+## Predefined vs Custom Rewards
+
+The system supports two types of rewards:
+
+<CardGroup cols={2}>
+  <Card title="Predefined Rewards" icon="store">
+    **Built-in rewards**
+    
+    - Defined in the application code
+    - Same for all households
+    - Can include ZenPrime-exclusive items
+    - Examples: "Movie night choice", "Extra dessert"
+  </Card>
+  
+  <Card title="Custom Rewards" icon="wand-magic-sparkles">
+    **Household-specific rewards**
+    
+    - Created by household members
+    - Stored in Firestore
+    - Unique to each household
+    - Examples: "Use the car Saturday", "Sleep in on Sunday"
+  </Card>
+</CardGroup>
+
+## ZenPrime Rewards
+
+Some rewards are exclusive to ZenPrime subscribers:
+
+```typescript
+soloZenPrime?: boolean;
+```
+
+The UI can check the household's ZenPrime status and filter/disable premium rewards:
+
+```typescript
+interface DialogTiendaData {
+  puntosDisponibles: number;
+  esZenPrime: boolean;  // Enable/disable premium rewards
+  usuarioUid?: string;
+  hogarId?: string;
+  esAdmin?: boolean;
+  esDemo?: boolean;
+  recompensasPersonalizadas?: Recompensa[];
+}
+```
+
+## Redemption History
+
+Each redemption is stored in the user's `canjeos` subcollection:
+
+```
+usuarios/
+  {uid}/
+    canjeos/
+      {canjeoId}/
+        recompensaId: string
+        titulo: string
+        puntosGastados: number
+        tipo: 'predefinida' | 'personalizada'
+        fecha: Date
+```
+
+This provides:
+- **Personal history**: Users can see their own redemptions
+- **Audit trail**: Track point spending over time
+- **Analytics**: Understand popular rewards and spending patterns
+
+## Integration with Notifications
+
+When a reward is redeemed, a notification is created for the household:
+
+```typescript
+// After successful redemption
+await this.notificacionesService.crearNotificacionCanje(hogarId, {
+  actorUid: usuarioId,
+  actorNombre: usuario.nombre,
+  recompensaId: recompensa.id,
+  recompensaTitulo: recompensa.titulo,
+  coste: puntosGastados
+});
+```
+
+This creates a visible activity feed showing all members' redemptions.
+
+See [Notifications](/features/notifications) for more details.
+
+## Point Reset on Household Events
+
+Points are reset to zero in certain scenarios:
+
+### Leaving a Household
+
+```typescript
+// In HogarService.salirDeHogar()
+await setDoc(userRef, {
+  puntos: 0,
+  hogarId: null,
+  totalTareasRealizadasHogar: 0,
+  actualizadoEn: serverTimestamp(),
+}, { merge: true });
+```
+
+### Household Deletion
+
+```typescript
+// In HogarService.eliminarHogar()
+batch.set(uref, {
+  puntos: 0,
+  hogarId: null,
+  totalTareasRealizadasHogar: 0,
+  actualizadoEn: serverTimestamp(),
+}, { merge: true });
+```
+
+<Warning>
+  Points are **not transferable** between households. When leaving or deleting a household, all accumulated points are lost.
+</Warning>
+
+## Point Economy Design
+
+The points system is designed to:
+
+<CardGroup cols={2}>
+  <Card title="Encourage Quality" icon="star">
+    Higher ratings earn more points, incentivizing thorough work
+  </Card>
+  
+  <Card title="Discourage Abandonment" icon="ban">
+    Heavy penalty (-150) for abandoning tasks prevents gaming the system
+  </Card>
+  
+  <Card title="Flexible Weighting" icon="scale-balanced">
+    Tasks can have different weights based on difficulty or importance
+  </Card>
+  
+  <Card title="Prevent Inflation" icon="coins">
+    Points reset on household changes prevents unlimited accumulation
+  </Card>
+</CardGroup>
+
+## Transaction Safety
+
+All point-related operations use Firestore transactions to ensure:
+
+<Accordion title="Atomic Updates">
+  Either all changes succeed or all fail:
+  
+  ```typescript
+  return runTransaction(this.fs, async (tx) => {
+    // All reads and writes happen atomically
+  });
+  ```
+</Accordion>
+
+<Accordion title="No Negative Balances">
+  Point deductions are validated before execution:
+  
+  ```typescript
+  if (puntosActuales < puntosGastados) {
+    throw new Error('No tienes suficientes puntos');
+  }
+  ```
+</Accordion>
+
+<Accordion title="Consistent State">
+  User balance and redemption history are always in sync thanks to transactions.
+</Accordion>
+
+## Example Point Flow
+
+<Steps>
+  <Step title="User Completes Task">
+    María finishes "Clean the kitchen" task
+  </Step>
+  
+  <Step title="Household Members Rate">
+    - Juan rates 5 stars
+    - Ana rates 4 stars
+    - Average: 4.5 → rounds to 5 stars
+  </Step>
+  
+  <Step title="Points Calculated">
+    - Base points for 5 stars: 10
+    - Task weight: 2
+    - Total: 10 × 2 = **20 points**
+  </Step>
+  
+  <Step title="Points Awarded">
+    María's balance increases from 150 to **170 points**
+  </Step>
+  
+  <Step title="María Redeems Reward">
+    She spends 50 points on "Choose movie tonight"
+    New balance: 170 - 50 = **120 points**
+  </Step>
+  
+  <Step title="Notification Created">
+    All household members see: "María redeemed 'Choose movie tonight' for 50 points"
+  </Step>
+</Steps>
+
+## Analytics Potential
+
+The point system tracks multiple metrics:
+
+```typescript
+interface Usuario {
+  puntos?: number;                        // Current balance
+  totalTareasRealizadas?: number;         // Lifetime total
+  totalTareasRealizadasHogar?: number;   // Current household total
+}
+```
+
+This enables:
+- **Leaderboards**: Rank users by points or tasks completed
+- **Progress tracking**: Show task completion trends
+- **Fair distribution**: Identify if work is balanced across members
+- **Engagement metrics**: Track active vs inactive members

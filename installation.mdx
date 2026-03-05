@@ -1,0 +1,580 @@
+---
+title: Installation Guide
+description: Set up ZenHogar on your local development environment
+---
+
+This guide will walk you through setting up ZenHogar on your local machine for development or self-hosting.
+
+## System Requirements
+
+Before you begin, ensure your system meets these requirements:
+
+- **Node.js**: Version 18 or higher
+- **npm**: Comes with Node.js
+- **Git**: For cloning the repository
+- **Code Editor**: Visual Studio Code (recommended) or your preferred IDE
+
+<Note>
+  You can check your Node.js version by running `node --version` in your terminal.
+</Note>
+
+## Prerequisites
+
+You'll need accounts and access to the following services:
+
+<CardGroup cols={2}>
+  <Card title="Firebase" icon="fire">
+    For authentication, database, and hosting
+  </Card>
+  <Card title="EmailJS" icon="envelope">
+    For sending invitation and notification emails
+  </Card>
+  <Card title="Google Cloud" icon="google">
+    For OAuth authentication setup
+  </Card>
+  <Card title="GitHub" icon="github">
+    To clone the repository
+  </Card>
+</CardGroup>
+
+## Installation Steps
+
+<Steps>
+  <Step title="Clone the Repository">
+    First, clone the ZenHogar repository from GitHub:
+
+    ```bash
+    git clone https://github.com/XabSaRon/ZenHogar.git
+    cd ZenHogar
+    ```
+
+    <Note>
+      The repository is licensed for personal and educational use only. Commercial use requires explicit permission from the author.
+    </Note>
+  </Step>
+
+  <Step title="Install Dependencies">
+    Install all required npm packages:
+
+    ```bash
+    npm install
+    ```
+
+    This will install the following key dependencies:
+
+    <CodeGroup>
+    ```json Core Dependencies
+    {
+      "@angular/core": "^20.0.0",
+      "@angular/fire": "^20.0.1",
+      "@angular/material": "^20.0.5",
+      "@emailjs/browser": "^4.4.1",
+      "rxjs": "~7.8.0",
+      "uuid": "^11.1.0"
+    }
+    ```
+
+    ```json Dev Dependencies
+    {
+      "@angular/cli": "^20.0.5",
+      "typescript": "~5.8.2",
+      "prettier": "^3.8.1",
+      "husky": "^9.1.7",
+      "lint-staged": "^16.2.7"
+    }
+    ```
+    </CodeGroup>
+
+    The installation process should complete in a few minutes depending on your internet connection.
+  </Step>
+
+  <Step title="Set Up Firebase">
+    ZenHogar uses Firebase for authentication, Firestore database, and hosting.
+
+    ### Create a Firebase Project
+
+    1. Go to [Firebase Console](https://console.firebase.google.com/)
+    2. Click **Add Project**
+    3. Enter a project name (e.g., "zenhogar-dev")
+    4. Follow the setup wizard to create your project
+
+    ### Enable Firebase Services
+
+    #### 1. Enable Authentication
+
+    1. Navigate to **Authentication** in the left sidebar
+    2. Click **Get Started**
+    3. Enable **Google** as a sign-in provider
+    4. Add your authorized domains (localhost for development)
+
+    #### 2. Create Firestore Database
+
+    1. Navigate to **Firestore Database**
+    2. Click **Create Database**
+    3. Choose **Start in test mode** for development
+    4. Select a location close to you
+
+    <Note>
+      For production, you'll need to set up proper Firestore security rules. See the security rules section below.
+    </Note>
+
+    #### 3. Get Firebase Configuration
+
+    1. Go to **Project Settings** (gear icon)
+    2. Scroll down to **Your apps**
+    3. Click the web icon `</>`
+    4. Register your app with a nickname
+    5. Copy the Firebase configuration object
+
+    ```javascript Firebase Config Example
+    const firebaseConfig = {
+      apiKey: "AIza...",
+      authDomain: "your-project.firebaseapp.com",
+      projectId: "your-project-id",
+      storageBucket: "your-project.appspot.com",
+      messagingSenderId: "123456789",
+      appId: "1:123456789:web:abc123"
+    };
+    ```
+  </Step>
+
+  <Step title="Configure Environment Variables">
+    Create your environment configuration files from the provided examples:
+
+    ```bash
+    # Copy the example environment file
+    cp src/environments/environment.example.ts src/environments/environment.ts
+    ```
+
+    Edit `src/environments/environment.ts` with your Firebase and EmailJS credentials:
+
+    <CodeGroup>
+    ```typescript environment.ts
+    export const environment = {
+      production: false,
+      firebase: {
+        projectId: 'your-project-id',
+        appId: '1:123456789:web:abc123',
+        storageBucket: 'your-project.appspot.com',
+        apiKey: 'AIza...',
+        authDomain: 'your-project.firebaseapp.com',
+        messagingSenderId: '123456789',
+      },
+      emailjs: {
+        serviceId: 'your_service_id',
+        templateId: 'your_template_id',
+        publicKey: 'your_public_key'
+      }
+    };
+    ```
+
+    ```typescript environment.prod.ts
+    // For production deployment
+    export const environment = {
+      production: true,
+      firebase: {
+        // Your production Firebase config
+      },
+      emailjs: {
+        // Your production EmailJS config
+      }
+    };
+    ```
+    </CodeGroup>
+
+    <Note>
+      Never commit your actual `environment.ts` file to version control. It's already included in `.gitignore`.
+    </Note>
+
+    ### Set Up EmailJS
+
+    1. Go to [EmailJS](https://www.emailjs.com/)
+    2. Create a free account
+    3. Add an email service (Gmail, Outlook, etc.)
+    4. Create an email template for invitations
+    5. Copy your Service ID, Template ID, and Public Key
+
+    Example email template variables:
+    - `{{to_email}}`: Recipient email
+    - `{{from_name}}`: Sender name
+    - `{{hogar_nombre}}`: Household name
+    - `{{codigo}}`: Invitation code
+  </Step>
+
+  <Step title="Configure Firebase Security Rules">
+    Set up Firestore security rules to protect your data:
+
+    ```javascript firestore.rules
+    rules_version = '2';
+    service cloud.firestore {
+      match /databases/{database}/documents {
+        
+        // Helper functions
+        function isSignedIn() {
+          return request.auth != null;
+        }
+        
+        function getUserData() {
+          return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data;
+        }
+        
+        function getHogarId() {
+          return getUserData().hogarId;
+        }
+        
+        // User documents
+        match /usuarios/{userId} {
+          allow read: if isSignedIn();
+          allow write: if isSignedIn() && request.auth.uid == userId;
+        }
+        
+        // Household documents
+        match /hogares/{hogarId} {
+          allow read: if isSignedIn() && 
+            hogarId == getHogarId();
+          allow create: if isSignedIn();
+          allow update: if isSignedIn() && 
+            hogarId == getHogarId();
+          allow delete: if isSignedIn() && 
+            request.auth.uid == resource.data.ownerUid;
+            
+          // Household members subcollection
+          match /miembros/{memberId} {
+            allow read: if isSignedIn() && 
+              hogarId == getHogarId();
+            allow write: if isSignedIn();
+          }
+          
+          // Household events
+          match /eventos/{eventoId} {
+            allow read: if isSignedIn() && 
+              hogarId == getHogarId();
+            allow write: if isSignedIn();
+          }
+        }
+        
+        // Tasks
+        match /tareas/{tareaId} {
+          allow read: if isSignedIn() && 
+            resource.data.hogarId == getHogarId();
+          allow create: if isSignedIn();
+          allow update: if isSignedIn() && 
+            resource.data.hogarId == getHogarId();
+          allow delete: if isSignedIn() && 
+            resource.data.hogarId == getHogarId();
+        }
+        
+        // Invitations
+        match /invitaciones/{codigo} {
+          allow read: if isSignedIn();
+          allow create: if isSignedIn();
+          allow update: if isSignedIn();
+        }
+        
+        // Task assignment requests
+        match /peticionesAsignacion/{peticionId} {
+          allow read: if isSignedIn() && 
+            (resource.data.hogarId == getHogarId() ||
+             resource.data.deUid == request.auth.uid ||
+             resource.data.paraUid == request.auth.uid);
+          allow create: if isSignedIn();
+          allow update: if isSignedIn();
+        }
+      }
+    }
+    ```
+
+    Apply these rules in the Firebase Console under **Firestore Database > Rules**.
+  </Step>
+
+  <Step title="Start the Development Server">
+    You're now ready to run ZenHogar locally!
+
+    ```bash
+    npm start
+    ```
+
+    Or use the Angular CLI directly:
+
+    ```bash
+    ng serve
+    ```
+
+    The application will be available at:
+    
+    ```
+    http://localhost:4200
+    ```
+
+    <Note>
+      The development server supports hot module replacement, so changes you make to the code will automatically reload in your browser.
+    </Note>
+
+    ### Available npm Scripts
+
+    ```json package.json
+    {
+      "scripts": {
+        "start": "ng serve",
+        "build": "ng build",
+        "watch": "ng build --watch --configuration development",
+        "test": "ng test",
+        "lint": "ng lint"
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Project Structure
+
+Understanding the project structure will help you navigate the codebase:
+
+```bash Project Directory
+ZenHogar/
+├── src/
+│   ├── app/
+│   │   ├── core/
+│   │   │   ├── auth/              # Authentication services
+│   │   │   │   ├── auth.service.ts
+│   │   │   │   ├── firebase-auth-wrapper.ts
+│   │   │   │   └── firestore-wrapper.ts
+│   │   │   ├── hogar/             # Household management
+│   │   │   │   ├── services/
+│   │   │   │   │   └── hogar.service.ts
+│   │   │   │   ├── models/
+│   │   │   │   │   └── hogar.model.ts
+│   │   │   │   └── component/
+│   │   │   ├── tareas/            # Task management
+│   │   │   │   ├── services/
+│   │   │   │   │   └── tareas.service.ts
+│   │   │   │   ├── models/
+│   │   │   │   │   └── tarea.model.ts
+│   │   │   │   └── component/
+│   │   │   ├── invitaciones/      # Invitation system
+│   │   │   │   ├── services/
+│   │   │   │   │   └── invitaciones.service.ts
+│   │   │   │   └── models/
+│   │   │   └── usuarios/          # User management
+│   │   ├── shared/                # Shared components & utilities
+│   │   ├── app.config.ts          # App configuration
+│   │   └── app.routes.ts          # Routing configuration
+│   ├── environments/              # Environment configs
+│   │   ├── environment.example.ts
+│   │   └── environment.ts
+│   └── index.html
+├── firebase.json                  # Firebase hosting config
+├── angular.json                   # Angular configuration
+├── package.json                   # Dependencies
+└── tsconfig.json                  # TypeScript config
+```
+
+## Building for Production
+
+When you're ready to deploy ZenHogar:
+
+<Steps>
+  <Step title="Build the Production Bundle">
+    ```bash
+    npm run build
+    ```
+
+    Or with Angular CLI:
+
+    ```bash
+    ng build --configuration production
+    ```
+
+    This creates an optimized production build in the `dist/zenhogar/browser` directory.
+  </Step>
+
+  <Step title="Deploy to Firebase Hosting">
+    Install the Firebase CLI if you haven't already:
+
+    ```bash
+    npm install -g firebase-tools
+    ```
+
+    Login to Firebase:
+
+    ```bash
+    firebase login
+    ```
+
+    Initialize Firebase in your project (if not already done):
+
+    ```bash
+    firebase init
+    ```
+
+    Select:
+    - Hosting
+    - Use existing project (select your Firebase project)
+    - Public directory: `dist/zenhogar/browser`
+    - Single-page app: Yes
+    - Automatic builds with GitHub: No (optional)
+
+    Deploy to Firebase:
+
+    ```bash
+    firebase deploy
+    ```
+
+    Your app will be live at `https://your-project.web.app`
+  </Step>
+</Steps>
+
+## Firebase Hosting Configuration
+
+The `firebase.json` file is already configured for ZenHogar:
+
+```json firebase.json
+{
+  "hosting": {
+    "public": "dist/zenhogar/browser",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Port 4200 is already in use">
+    If you see an error that port 4200 is already in use:
+
+    ```bash
+    # Kill the process using port 4200
+    npx kill-port 4200
+    
+    # Or run on a different port
+    ng serve --port 4300
+    ```
+  </Accordion>
+
+  <Accordion title="Firebase authentication not working">
+    Common Firebase auth issues:
+
+    1. **Check authorized domains**: In Firebase Console > Authentication > Settings > Authorized domains, make sure `localhost` is listed
+    2. **Verify API key**: Ensure your `environment.ts` has the correct Firebase config
+    3. **Check browser console**: Look for CORS or authentication errors
+  </Accordion>
+
+  <Accordion title="Firestore permission denied errors">
+    If you're getting permission denied errors:
+
+    1. Verify your Firestore rules are set up correctly
+    2. For development, you can temporarily use test mode:
+       ```javascript
+       rules_version = '2';
+       service cloud.firestore {
+         match /databases/{database}/documents {
+           match /{document=**} {
+             allow read, write: if request.time < timestamp.date(2026, 12, 31);
+           }
+         }
+       }
+       ```
+    3. Make sure you're signed in with a Google account
+  </Accordion>
+
+  <Accordion title="EmailJS not sending emails">
+    EmailJS troubleshooting:
+
+    1. Verify your Service ID, Template ID, and Public Key are correct
+    2. Check that your email service is connected in EmailJS dashboard
+    3. Ensure template variables match what's being sent from the code
+    4. Check EmailJS quota (free tier has limits)
+  </Accordion>
+
+  <Accordion title="Build errors with TypeScript">
+    If you encounter TypeScript compilation errors:
+
+    ```bash
+    # Clear Angular cache
+    rm -rf .angular
+    
+    # Reinstall dependencies
+    rm -rf node_modules package-lock.json
+    npm install
+    
+    # Try building again
+    npm run build
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Development Tools
+
+### Code Quality
+
+ZenHogar uses several tools to maintain code quality:
+
+- **Prettier**: Code formatting
+- **ESLint**: Code linting
+- **Husky**: Git hooks for pre-commit checks
+- **lint-staged**: Run linters on staged files
+
+```bash
+# Format code
+npx prettier --write "src/**/*.{ts,html,scss,css,md,json}"
+
+# Run linter
+npm run lint
+```
+
+### Testing
+
+Run the test suite with:
+
+```bash
+npm test
+```
+
+This launches Karma test runner with Jasmine framework.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart Guide" icon="rocket" href="/quickstart">
+    Learn how to use ZenHogar's features
+  </Card>
+  
+  <Card title="API Documentation" icon="code" href="/api/auth-service">
+    Explore the API and services
+  </Card>
+  
+  <Card title="Firebase Setup" icon="fire" href="/configuration/firebase-setup">
+    Configure Firebase for authentication and database
+  </Card>
+  
+  <Card title="Project Structure" icon="folder-tree" href="/guides/project-structure">
+    Understand the codebase architecture
+  </Card>
+</CardGroup>
+
+## License
+
+ZenHogar is protected by copyright and licensed for personal and educational use only. Any commercial use requires explicit permission from the author [Xabier San Martín](https://github.com/XabSaRon).
+
+## Need Help?
+
+If you encounter any issues during installation:
+
+1. Check this guide's troubleshooting section
+2. Review the [GitHub issues](https://github.com/XabSaRon/ZenHogar/issues)
+3. Contact the project maintainer
+
+---
+
+**Project created and maintained by** [Xabier San Martín](https://github.com/XabSaRon)

@@ -1,0 +1,469 @@
+---
+title: Environment Variables
+description: Complete reference for ZenHogar environment configuration
+---
+
+ZenHogar uses environment files to manage configuration for different deployment environments (development, production). This guide covers all configuration options and best practices.
+
+## Environment File Structure
+
+ZenHogar uses a multi-file environment setup:
+
+```
+src/environments/
+├── environment.ts              # Main file (imports from environment.local.ts)
+├── environment.local.ts        # Local config (NOT in git)
+├── environment.example.ts      # Development template
+└── environment.prod.example.ts # Production template
+```
+
+<Note>
+  The main `environment.ts` file imports from `environment.local.ts`:
+  
+  ```typescript
+  import { environment as local } from './environment.local';
+  export const environment = local;
+  ```
+  
+  This pattern keeps sensitive credentials out of version control.
+</Note>
+
+## Configuration Reference
+
+### Complete Environment Object
+
+```typescript
+export const environment = {
+  production: boolean,
+  firebase: {
+    projectId: string,
+    appId: string,
+    storageBucket: string,
+    apiKey: string,
+    authDomain: string,
+    messagingSenderId: string,
+  },
+  emailjs: {
+    serviceId: string,
+    templateId: string,
+    publicKey: string,
+    templates: {
+      hogarEliminado: string
+    }
+  }
+};
+```
+
+### Firebase Configuration
+
+<ParamField path="firebase.projectId" type="string" required>
+  Your Firebase project ID. Found in Firebase Console > Project Settings.
+  
+  **Example**: `zenhogar` or `zenhogar-dev`
+</ParamField>
+
+<ParamField path="firebase.appId" type="string" required>
+  Firebase web app ID. Generated when you register a web app in Firebase.
+  
+  **Example**: `1:123456789012:web:abc123def456`
+</ParamField>
+
+<ParamField path="firebase.storageBucket" type="string" required>
+  Firebase Storage bucket URL.
+  
+  **Example**: `zenhogar.appspot.com`
+</ParamField>
+
+<ParamField path="firebase.apiKey" type="string" required>
+  Firebase Web API key. Used for client-side Firebase SDK authentication.
+  
+  **Example**: `AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz123456`
+  
+  <Note>
+    This key is safe to use in client-side code. Firebase uses security rules to protect data.
+  </Note>
+</ParamField>
+
+<ParamField path="firebase.authDomain" type="string" required>
+  Firebase Authentication domain for OAuth redirects.
+  
+  **Example**: `zenhogar.firebaseapp.com`
+</ParamField>
+
+<ParamField path="firebase.messagingSenderId" type="string" required>
+  Firebase Cloud Messaging sender ID.
+  
+  **Example**: `123456789012`
+</ParamField>
+
+### EmailJS Configuration
+
+<ParamField path="emailjs.serviceId" type="string" required>
+  EmailJS email service ID. Created in EmailJS dashboard under Email Services.
+  
+  **Example**: `service_abc1234`
+  
+  Used in: `email.service.ts:10`, `email.service.ts:24`
+</ParamField>
+
+<ParamField path="emailjs.templateId" type="string" required>
+  EmailJS template ID for household invitation emails.
+  
+  **Example**: `template_xyz5678`
+  
+  **Template variables**:
+  - `{{to_email}}` - Recipient email
+  - `{{hogar}}` - Household name
+  - `{{codigo}}` - Invitation code
+  
+  Used in: `email.service.ts:11`
+</ParamField>
+
+<ParamField path="emailjs.publicKey" type="string" required>
+  EmailJS public key (also called User ID). Found in EmailJS Account settings.
+  
+  **Example**: `user_AbCdEfGhIjKlMnOp`
+  
+  Used in: `email.service.ts:13`, `email.service.ts:27`
+</ParamField>
+
+<ParamField path="emailjs.templates.hogarEliminado" type="string" required>
+  EmailJS template ID for household deletion notifications.
+  
+  **Example**: `template_del9012`
+  
+  **Template variables**:
+  - `{{to_email}}` - Recipient email
+  - `{{hogar}}` - Household name
+  - `{{admin_nombre}}` - Administrator name
+  
+  Used in: `email.service.ts:25`
+</ParamField>
+
+## Setup Instructions
+
+<Steps>
+  <Step title="Copy example file">
+    Create your local environment configuration:
+
+    ```bash
+    cd src/environments
+    cp environment.example.ts environment.local.ts
+    ```
+  </Step>
+
+  <Step title="Configure Firebase">
+    Follow the [Firebase Setup](/configuration/firebase-setup) guide to:
+    1. Create a Firebase project
+    2. Enable Authentication (Google provider)
+    3. Enable Firestore Database
+    4. Get your Firebase configuration values
+  </Step>
+
+  <Step title="Configure EmailJS">
+    Follow the [EmailJS Setup](/configuration/emailjs-setup) guide to:
+    1. Create an EmailJS account
+    2. Add an email service
+    3. Create email templates
+    4. Get your Service ID, Template IDs, and Public Key
+  </Step>
+
+  <Step title="Update environment.local.ts">
+    Replace all `REPLACE_ME` values with your actual credentials:
+
+    ```typescript
+    export const environment = {
+      production: false,
+      firebase: {
+        projectId: 'zenhogar-dev',
+        appId: '1:123456789012:web:abc123def456',
+        storageBucket: 'zenhogar-dev.appspot.com',
+        apiKey: 'AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz123456',
+        authDomain: 'zenhogar-dev.firebaseapp.com',
+        messagingSenderId: '123456789012',
+      },
+      emailjs: {
+        serviceId: 'service_abc1234',
+        templateId: 'template_xyz5678',
+        publicKey: 'user_AbCdEfGhIjKlMnOp',
+        templates: {
+          hogarEliminado: 'template_del9012'
+        }
+      }
+    };
+    ```
+  </Step>
+
+  <Step title="Verify configuration">
+    Start the development server to test:
+
+    ```bash
+    npm start
+    ```
+
+    Check for configuration errors in the browser console.
+  </Step>
+</Steps>
+
+## Development vs Production
+
+### Development Environment
+
+<CodeGroup>
+```typescript environment.local.ts
+export const environment = {
+  production: false,  // Development mode
+  firebase: {
+    projectId: 'zenhogar-dev',
+    // ... dev credentials
+  },
+  emailjs: {
+    serviceId: 'service_dev_123',
+    // ... dev credentials
+  }
+};
+```
+</CodeGroup>
+
+**Characteristics:**
+- `production: false` enables development mode
+- Uses development Firebase project
+- May use test email templates
+- Detailed error messages in console
+
+### Production Environment
+
+<CodeGroup>
+```typescript environment.prod.ts
+export const environment = {
+  production: true,  // Production mode
+  firebase: {
+    projectId: 'zenhogar-prod',
+    // ... production credentials
+  },
+  emailjs: {
+    serviceId: 'service_prod_456',
+    // ... production credentials
+  }
+};
+```
+</CodeGroup>
+
+**Characteristics:**
+- `production: true` enables production optimizations
+- Uses production Firebase project with strict security rules
+- Uses production-ready email templates
+- Error messages are sanitized
+
+<Warning>
+  Always use separate Firebase projects for development and production. Never share credentials between environments.
+</Warning>
+
+## How Configuration is Used
+
+### Firebase Integration
+
+The Firebase configuration is consumed in `app.config.ts:17`:
+
+```typescript
+import { initializeApp, provideFirebaseApp } from '@angular/fire/app';
+import { getAuth, provideAuth } from '@angular/fire/auth';
+import { getFirestore, provideFirestore } from '@angular/fire/firestore';
+import { environment } from '../environments/environment';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideFirebaseApp(() => initializeApp(environment.firebase)),
+    provideAuth(() => getAuth()),
+    provideFirestore(() => getFirestore()),
+  ]
+};
+```
+
+### EmailJS Integration
+
+EmailJS configuration is used in `EmailService`:
+
+```typescript
+import emailjs from '@emailjs/browser';
+import { environment } from '../../../environments/environment';
+
+@Injectable({ providedIn: 'root' })
+export class EmailService {
+  enviarInvitacion(destino: string, hogar: string, codigo: string) {
+    const params = { to_email: destino, hogar, codigo };
+    return emailjs.send(
+      environment.emailjs.serviceId,
+      environment.emailjs.templateId,
+      params,
+      environment.emailjs.publicKey
+    );
+  }
+}
+```
+
+## Security Best Practices
+
+<Warning>
+  **Critical Security Rules:**
+  
+  1. **Never commit** `environment.local.ts` to version control
+  2. **Add to .gitignore**:
+     ```gitignore
+     # Environment files
+     src/environments/environment.local.ts
+     src/environments/environment.prod.ts
+     ```
+  3. **Use environment variables** in CI/CD pipelines
+  4. **Rotate credentials** if accidentally exposed
+  5. **Use separate projects** for dev and prod
+</Warning>
+
+### What's Safe to Commit
+
+✅ **Safe to commit:**
+- `environment.example.ts` (with `REPLACE_ME` placeholders)
+- `environment.prod.example.ts` (with `REPLACE_ME` placeholders)
+- `environment.ts` (imports only, no credentials)
+
+❌ **Never commit:**
+- `environment.local.ts` (contains real credentials)
+- `environment.prod.ts` (contains production credentials)
+- Any file with actual API keys, service IDs, or secrets
+
+## CI/CD Configuration
+
+For automated deployments, use environment variables:
+
+### GitHub Actions Example
+
+```yaml
+name: Deploy to Firebase
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      
+      - name: Create environment file
+        run: |
+          cat > src/environments/environment.local.ts << EOF
+          export const environment = {
+            production: true,
+            firebase: {
+              projectId: '${{ secrets.FIREBASE_PROJECT_ID }}',
+              appId: '${{ secrets.FIREBASE_APP_ID }}',
+              storageBucket: '${{ secrets.FIREBASE_STORAGE_BUCKET }}',
+              apiKey: '${{ secrets.FIREBASE_API_KEY }}',
+              authDomain: '${{ secrets.FIREBASE_AUTH_DOMAIN }}',
+              messagingSenderId: '${{ secrets.FIREBASE_MESSAGING_SENDER_ID }}',
+            },
+            emailjs: {
+              serviceId: '${{ secrets.EMAILJS_SERVICE_ID }}',
+              templateId: '${{ secrets.EMAILJS_TEMPLATE_ID }}',
+              publicKey: '${{ secrets.EMAILJS_PUBLIC_KEY }}',
+              templates: {
+                hogarEliminado: '${{ secrets.EMAILJS_TEMPLATE_DELETED }}'
+              }
+            }
+          };
+          EOF
+      
+      - name: Build
+        run: npm run build
+      
+      - name: Deploy to Firebase
+        uses: w9jds/firebase-action@master
+        with:
+          args: deploy --only hosting
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+```
+
+## Troubleshooting
+
+### Configuration Not Loading
+
+1. **Check file exists**: Verify `environment.local.ts` exists in `src/environments/`
+2. **Check import path**: Ensure `environment.ts` correctly imports from `environment.local`
+3. **Restart dev server**: Stop and restart `npm start`
+4. **Clear cache**: Delete `node_modules/.cache` and restart
+
+### Firebase Connection Errors
+
+- **Invalid API key**: Double-check `apiKey` matches Firebase Console
+- **Wrong project ID**: Verify `projectId` is correct
+- **Auth domain mismatch**: Ensure `authDomain` matches your Firebase project
+- **Firestore not enabled**: Check Firestore is enabled in Firebase Console
+
+### EmailJS Not Sending
+
+- **Invalid service ID**: Verify `serviceId` in EmailJS dashboard
+- **Template not found**: Check `templateId` and `templates.hogarEliminado` exist
+- **Public key incorrect**: Confirm `publicKey` matches your EmailJS account
+- **Rate limit exceeded**: Free tier limited to 200 emails/month
+
+## Example Configurations
+
+### Development Configuration
+
+```typescript
+export const environment = {
+  production: false,
+  firebase: {
+    projectId: 'zenhogar-dev-12345',
+    appId: '1:987654321098:web:abc123def456ghi',
+    storageBucket: 'zenhogar-dev-12345.appspot.com',
+    apiKey: 'AIzaSyDEVELOPMENT_KEY_EXAMPLE_123',
+    authDomain: 'zenhogar-dev-12345.firebaseapp.com',
+    messagingSenderId: '987654321098',
+  },
+  emailjs: {
+    serviceId: 'service_dev_abc123',
+    templateId: 'template_dev_invite',
+    publicKey: 'user_DevPublicKey123',
+    templates: {
+      hogarEliminado: 'template_dev_deleted'
+    }
+  }
+};
+```
+
+### Production Configuration
+
+```typescript
+export const environment = {
+  production: true,
+  firebase: {
+    projectId: 'zenhogar-prod',
+    appId: '1:123456789012:web:xyz789abc123def',
+    storageBucket: 'zenhogar-prod.appspot.com',
+    apiKey: 'AIzaSyPRODUCTION_KEY_EXAMPLE_789',
+    authDomain: 'zenhogar-prod.firebaseapp.com',
+    messagingSenderId: '123456789012',
+  },
+  emailjs: {
+    serviceId: 'service_prod_xyz789',
+    templateId: 'template_prod_invite',
+    publicKey: 'user_ProdPublicKey789',
+    templates: {
+      hogarEliminado: 'template_prod_deleted'
+    }
+  }
+};
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Firebase Setup" icon="fire" href="/configuration/firebase-setup">
+    Detailed Firebase configuration guide
+  </Card>
+  <Card title="EmailJS Setup" icon="envelope" href="/configuration/emailjs-setup">
+    Complete EmailJS integration guide
+  </Card>
+</CardGroup>

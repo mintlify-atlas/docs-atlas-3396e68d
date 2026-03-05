@@ -1,0 +1,664 @@
+---
+title: 'Adding Features'
+description: 'Step-by-step guide to extending ZenHogar with new functionality'
+---
+
+# Adding Features
+
+This guide walks you through adding new features to ZenHogar, following the established patterns and best practices.
+
+## Feature Development Workflow
+
+<Steps>
+  <Step title="Design the data model">
+    Define TypeScript interfaces and Firestore collections
+  </Step>
+  
+  <Step title="Create the service layer">
+    Implement business logic and Firebase operations
+  </Step>
+  
+  <Step title="Build components">
+    Create UI components with Angular Material
+  </Step>
+  
+  <Step title="Integrate with existing features">
+    Connect to authentication, navigation, and state management
+  </Step>
+  
+  <Step title="Test and refine">
+    Test locally and deploy
+  </Step>
+</Steps>
+
+## Example: Adding a "Gastos" (Expenses) Feature
+
+Let's walk through adding a shared expense tracking feature.
+
+### Step 1: Create the Data Model
+
+Create a new model file:
+
+```typescript src/app/core/gastos/models/gasto.model.ts
+import { Timestamp } from '@angular/fire/firestore';
+
+export type CategoriaGasto = 'Comida' | 'Limpieza' | 'Servicios' | 'Otros';
+
+export interface Gasto {
+  id?: string;
+  descripcion: string;
+  cantidad: number;
+  categoria: CategoriaGasto;
+  pagadoPor: string;        // UID of user who paid
+  hogarId: string;
+  createdAt: Timestamp;
+  
+  // Split between members
+  dividirEntre: string[];   // Array of UIDs
+  
+  // Payment tracking
+  pagado?: {
+    [uid: string]: boolean; // Track who has settled up
+  };
+}
+```
+
+### Step 2: Create the Service
+
+Create the service to handle CRUD operations:
+
+```typescript src/app/core/gastos/services/gastos.service.ts
+import { Injectable, inject, EnvironmentInjector, runInInjectionContext } from '@angular/core';
+import {
+  Firestore,
+  collection,
+  query,
+  where,
+  addDoc,
+  doc,
+  updateDoc,
+  deleteDoc,
+  collectionData,
+  serverTimestamp,
+} from '@angular/fire/firestore';
+import { Auth } from '@angular/fire/auth';
+import { Observable } from 'rxjs';
+import { Gasto } from '../models/gasto.model';
+
+@Injectable({ providedIn: 'root' })
+export class GastosService {
+  private fs = inject(Firestore);
+  private auth = inject(Auth);
+  private injector = inject(EnvironmentInjector);
+
+  private inCtx<T>(fn: () => T): T {
+    return runInInjectionContext(this.injector, fn);
+  }
+
+  private inCtxAsync<T>(fn: () => Promise<T>): Promise<T> {
+    return runInInjectionContext(this.injector, fn);
+  }
+
+  /**
+   * Get all expenses for a home
+   */
+  getGastos$(hogarId: string): Observable<Gasto[]> {
+    return this.inCtx(() => {
+      const gastosCol = collection(this.fs, 'gastos');
+      const q = query(gastosCol, where('hogarId', '==', hogarId));
+      
+      return collectionData(q, { idField: 'id' }) as Observable<Gasto[]>;
+    });
+  }
+
+  /**
+   * Create a new expense
+   */
+  async crearGasto(
+    hogarId: string,
+    descripcion: string,
+    cantidad: number,
+    categoria: CategoriaGasto,
+    dividirEntre: string[]
+  ): Promise<string> {
+    return await this.inCtxAsync(async () => {
+      const user = this.auth.currentUser;
+      if (!user) throw new Error('Usuario no autenticado');
+
+      const gasto: Omit<Gasto, 'id'> = {
+        descripcion,
+        cantidad,
+        categoria,
+        pagadoPor: user.uid,
+        hogarId,
+        dividirEntre,
+        createdAt: serverTimestamp() as any,
+        pagado: {},
+      };
+
+      const ref = await addDoc(collection(this.fs, 'gastos'), gasto);
+      return ref.id;
+    });
+  }
+
+  /**
+   * Mark an expense as paid by a user
+   */
+  async marcarComoPagado(gastoId: string, uid: string): Promise<void> {
+    return await this.inCtxAsync(async () => {
+      const gastoRef = doc(this.fs, `gastos/${gastoId}`);
+      
+      await updateDoc(gastoRef, {
+        [`pagado.${uid}`]: true,
+      });
+    });
+  }
+
+  /**
+   * Delete an expense
+   */
+  async eliminarGasto(gastoId: string): Promise<void> {
+    return await this.inCtxAsync(async () => {
+      const gastoRef = doc(this.fs, `gastos/${gastoId}`);
+      await deleteDoc(gastoRef);
+    });
+  }
+
+  /**
+   * Calculate balance for each member
+   */
+  calcularBalances(gastos: Gasto[], miembros: string[]): Map<string, number> {
+    const balances = new Map<string, number>();
+    
+    // Initialize all members with 0 balance
+    miembros.forEach(uid => balances.set(uid, 0));
+
+    gastos.forEach(gasto => {
+      const porPersona = gasto.cantidad / gasto.dividirEntre.length;
+      
+      // Person who paid gets credited
+      balances.set(
+        gasto.pagadoPor,
+        (balances.get(gasto.pagadoPor) ?? 0) + gasto.cantidad
+      );
+      
+      // Each person who owes gets debited
+      gasto.dividirEntre.forEach(uid => {
+        balances.set(
+          uid,
+          (balances.get(uid) ?? 0) - porPersona
+        );
+      });
+    });
+
+    return balances;
+  }
+}
+```
+
+### Step 3: Create the Component
+
+Create a component to display expenses:
+
+```typescript src/app/core/gastos/components/lista-gastos.component.ts
+import { Component, inject, Input } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { MatCardModule } from '@angular/material/card';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { MatDialog } from '@angular/material/dialog';
+import { Observable } from 'rxjs';
+
+import { GastosService } from '../services/gastos.service';
+import { Gasto } from '../models/gasto.model';
+import { DialogCrearGastoComponent } from './dialog-crear-gasto.component';
+
+@Component({
+  selector: 'app-lista-gastos',
+  standalone: true,
+  imports: [
+    CommonModule,
+    MatCardModule,
+    MatButtonModule,
+    MatIconModule,
+  ],
+  template: `
+    <div class="gastos-container">
+      <div class="header">
+        <h2>Gastos Compartidos</h2>
+        <button mat-raised-button color="primary" (click)="abrirCrearGasto()">
+          <mat-icon>add</mat-icon>
+          Añadir Gasto
+        </button>
+      </div>
+
+      <div class="gastos-list" *ngIf="gastos$ | async as gastos">
+        <mat-card *ngFor="let gasto of gastos" class="gasto-card">
+          <mat-card-header>
+            <mat-card-title>{{ gasto.descripcion }}</mat-card-title>
+            <mat-card-subtitle>{{ gasto.categoria }}</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <p class="cantidad">{{ gasto.cantidad | currency:'EUR' }}</p>
+            <p class="info">Pagado por: {{ gasto.pagadoPor }}</p>
+            <p class="info">Dividido entre {{ gasto.dividirEntre.length }} personas</p>
+          </mat-card-content>
+          <mat-card-actions>
+            <button mat-button (click)="marcarPagado(gasto)">
+              Marcar como pagado
+            </button>
+            <button mat-button color="warn" (click)="eliminar(gasto.id!)">
+              Eliminar
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      </div>
+    </div>
+  `,
+  styles: [`
+    .gastos-container {
+      padding: 20px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .gastos-list {
+      display: grid;
+      gap: 16px;
+    }
+    .gasto-card {
+      .cantidad {
+        font-size: 24px;
+        font-weight: bold;
+        color: #1976d2;
+      }
+      .info {
+        font-size: 14px;
+        color: #666;
+      }
+    }
+  `]
+})
+export class ListaGastosComponent {
+  @Input() hogarId!: string;
+  
+  private gastosSvc = inject(GastosService);
+  private dialog = inject(MatDialog);
+
+  gastos$!: Observable<Gasto[]>;
+
+  ngOnInit() {
+    this.gastos$ = this.gastosSvc.getGastos$(this.hogarId);
+  }
+
+  abrirCrearGasto() {
+    this.dialog.open(DialogCrearGastoComponent, {
+      width: '600px',
+      data: { hogarId: this.hogarId },
+    });
+  }
+
+  async marcarPagado(gasto: Gasto) {
+    // Implementation
+  }
+
+  async eliminar(gastoId: string) {
+    await this.gastosSvc.eliminarGasto(gastoId);
+  }
+}
+```
+
+### Step 4: Create a Dialog Component
+
+Create a dialog for adding new expenses:
+
+```typescript src/app/core/gastos/components/dialog-crear-gasto.component.ts
+import { Component, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { MatDialogModule, MatDialogRef, MAT_DIALOG_DATA } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
+import { MatButtonModule } from '@angular/material/button';
+
+import { GastosService } from '../services/gastos.service';
+import { HogarService } from '../../hogar/services/hogar.service';
+import { CategoriaGasto } from '../models/gasto.model';
+
+@Component({
+  selector: 'app-dialog-crear-gasto',
+  standalone: true,
+  imports: [
+    CommonModule,
+    ReactiveFormsModule,
+    MatDialogModule,
+    MatFormFieldModule,
+    MatInputModule,
+    MatSelectModule,
+    MatButtonModule,
+  ],
+  template: `
+    <h2 mat-dialog-title>Añadir Gasto</h2>
+    <mat-dialog-content>
+      <form [formGroup]="form" class="gasto-form">
+        <mat-form-field appearance="outline">
+          <mat-label>Descripción</mat-label>
+          <input matInput formControlName="descripcion" placeholder="Ej: Compra del supermercado">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Cantidad</mat-label>
+          <input matInput type="number" formControlName="cantidad" placeholder="0.00">
+          <span matSuffix>€</span>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Categoría</mat-label>
+          <mat-select formControlName="categoria">
+            <mat-option value="Comida">Comida</mat-option>
+            <mat-option value="Limpieza">Limpieza</mat-option>
+            <mat-option value="Servicios">Servicios</mat-option>
+            <mat-option value="Otros">Otros</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Dividir entre</mat-label>
+          <mat-select formControlName="dividirEntre" multiple>
+            <mat-option *ngFor="let miembro of miembros" [value]="miembro.uid">
+              {{ miembro.nombre }}
+            </mat-option>
+          </mat-select>
+        </mat-form-field>
+      </form>
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close>Cancelar</button>
+      <button mat-raised-button color="primary" 
+              [disabled]="!form.valid || guardando"
+              (click)="guardar()">
+        {{ guardando ? 'Guardando...' : 'Guardar' }}
+      </button>
+    </mat-dialog-actions>
+  `,
+  styles: [`
+    .gasto-form {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-width: 400px;
+    }
+  `]
+})
+export class DialogCrearGastoComponent {
+  private fb = inject(FormBuilder);
+  private gastosSvc = inject(GastosService);
+  private hogarSvc = inject(HogarService);
+  private dialogRef = inject(MatDialogRef<DialogCrearGastoComponent>);
+  data = inject(MAT_DIALOG_DATA);
+
+  guardando = false;
+  miembros: any[] = [];
+
+  form = this.fb.group({
+    descripcion: ['', Validators.required],
+    cantidad: [0, [Validators.required, Validators.min(0.01)]],
+    categoria: ['Otros' as CategoriaGasto, Validators.required],
+    dividirEntre: [[] as string[], Validators.required],
+  });
+
+  ngOnInit() {
+    // Load home members
+    this.hogarSvc.getHogar$().subscribe(hogar => {
+      if (hogar) {
+        // Load member details
+        // Implementation depends on your user service
+      }
+    });
+  }
+
+  async guardar() {
+    if (!this.form.valid) return;
+
+    this.guardando = true;
+    try {
+      const { descripcion, cantidad, categoria, dividirEntre } = this.form.value;
+      
+      await this.gastosSvc.crearGasto(
+        this.data.hogarId,
+        descripcion!,
+        cantidad!,
+        categoria!,
+        dividirEntre!
+      );
+
+      this.dialogRef.close({ success: true });
+    } catch (error) {
+      console.error('Error creando gasto:', error);
+    } finally {
+      this.guardando = false;
+    }
+  }
+}
+```
+
+### Step 5: Integrate with Main App
+
+Add the expenses component to your main app:
+
+```typescript src/app/app.ts
+import { ListaGastosComponent } from './core/gastos/components/lista-gastos.component';
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [
+    // ... existing imports
+    ListaGastosComponent,
+  ],
+  // ...
+})
+export class App {
+  // Add a tab or section for expenses
+}
+```
+
+```html src/app/app.html
+<!-- Add to your navigation -->
+<mat-tab-group>
+  <mat-tab label="Tareas">
+    <app-lista-tareas [hogarId]="hogar.id"></app-lista-tareas>
+  </mat-tab>
+  
+  <mat-tab label="Gastos">
+    <app-lista-gastos [hogarId]="hogar.id"></app-lista-gastos>
+  </mat-tab>
+</mat-tab-group>
+```
+
+## Best Practices
+
+### Service Layer Patterns
+
+<Accordion title="Always use injection context wrappers">
+```typescript
+private inCtx<T>(fn: () => T): T {
+  return runInInjectionContext(this.injector, fn);
+}
+
+private inCtxAsync<T>(fn: () => Promise<T>): Promise<T> {
+  return runInInjectionContext(this.injector, fn);
+}
+```
+
+This ensures Firebase operations work correctly in Angular's zoneless mode.
+</Accordion>
+
+<Accordion title="Use Observable patterns for reactive data">
+```typescript
+// ✅ Observable that auto-updates
+getGastos$(hogarId: string): Observable<Gasto[]> {
+  return this.inCtx(() => {
+    const q = query(
+      collection(this.fs, 'gastos'),
+      where('hogarId', '==', hogarId)
+    );
+    return collectionData(q, { idField: 'id' });
+  });
+}
+
+// ❌ Don't use promises for data that changes
+async getGastos(hogarId: string): Promise<Gasto[]> {
+  // This won't update when data changes!
+}
+```
+</Accordion>
+
+<Accordion title="Validate authentication before operations">
+```typescript
+async crearGasto(...): Promise<string> {
+  const user = this.auth.currentUser;
+  if (!user) throw new Error('Usuario no autenticado');
+  
+  // Proceed with operation
+}
+```
+</Accordion>
+
+### Component Patterns
+
+<Accordion title="Use standalone components">
+```typescript
+@Component({
+  selector: 'app-feature',
+  standalone: true,  // ✅ Always standalone
+  imports: [
+    CommonModule,
+    // Import dependencies directly
+  ],
+})
+```
+</Accordion>
+
+<Accordion title="Use the async pipe in templates">
+```html
+<!-- ✅ Automatic subscription management -->
+<div *ngIf="gastos$ | async as gastos">
+  <div *ngFor="let gasto of gastos">{{ gasto.descripcion }}</div>
+</div>
+
+<!-- ❌ Manual subscriptions in component -->
+<div *ngFor="let gasto of gastos">{{ gasto.descripcion }}</div>
+```
+</Accordion>
+
+### Error Handling
+
+```typescript
+async crearGasto(...): Promise<string> {
+  return await this.inCtxAsync(async () => {
+    try {
+      // Firebase operation
+      const ref = await addDoc(...);
+      return ref.id;
+    } catch (error: any) {
+      // Handle specific Firebase errors
+      if (error.code === 'permission-denied') {
+        throw new Error('No tienes permisos para crear gastos');
+      }
+      throw error;
+    }
+  });
+}
+```
+
+## Testing Locally
+
+<Steps>
+  <Step title="Start development server">
+    ```bash
+    npm run start
+    # or
+    ng serve
+    ```
+    
+    Access at `http://localhost:4200`
+  </Step>
+  
+  <Step title="Test Firebase operations">
+    - Check browser console for errors
+    - Use Firebase Console to verify data is written correctly
+    - Test with multiple users/browsers
+  </Step>
+  
+  <Step title="Check build for errors">
+    ```bash
+    npm run build
+    ```
+    
+    Ensure no TypeScript or compilation errors
+  </Step>
+</Steps>
+
+## Common Gotchas
+
+<Warning>
+**Firestore Security Rules:** Don't forget to update security rules when adding new collections!
+
+```javascript
+// Add to firestore.rules
+match /gastos/{gastoId} {
+  allow read, write: if request.auth != null &&
+    request.auth.uid in get(/databases/$(database)/documents/hogares/$(resource.data.hogarId)).data.miembros;
+}
+```
+</Warning>
+
+<Warning>
+**Subscription Management:** Use `async` pipe or unsubscribe in `ngOnDestroy` to prevent memory leaks:
+
+```typescript
+private subs = new Subscription();
+
+ngOnInit() {
+  const sub = this.gastos$.subscribe(...);
+  this.subs.add(sub);
+}
+
+ngOnDestroy() {
+  this.subs.unsubscribe();
+}
+```
+</Warning>
+
+## File Organization Checklist
+
+When adding a new feature:
+
+- [ ] Create feature folder in `src/app/core/{feature}/`
+- [ ] Add `models/{feature}.model.ts` for TypeScript interfaces
+- [ ] Add `services/{feature}.service.ts` for business logic
+- [ ] Add `components/` folder for UI components
+- [ ] Update `src/app/app.ts` imports if needed
+- [ ] Add Firestore security rules
+- [ ] Test locally before deploying
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Project Structure" icon="folder-tree" href="/guides/project-structure">
+    Review the overall codebase organization
+  </Card>
+  
+  <Card title="Firebase Integration" icon="fire" href="/guides/firebase-integration">
+    Deep dive into Firebase patterns
+  </Card>
+  
+  <Card title="Deployment" icon="rocket" href="/guides/deployment">
+    Deploy your new feature to production
+  </Card>
+</CardGroup>

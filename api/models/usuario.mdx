@@ -1,0 +1,75 @@
+---
+title: 'Usuario'
+description: 'Model representing a user in ZenHogar'
+---
+
+## Overview
+
+The `Usuario` model represents a user account in the ZenHogar system. It stores basic user information, authentication details, and gamification metrics.
+
+## Properties
+
+<ResponseField name="uid" type="string" required>
+  Unique identifier for the user, typically from Firebase Authentication.
+</ResponseField>
+
+<ResponseField name="nombre" type="string" required>
+  Display name of the user.
+</ResponseField>
+
+<ResponseField name="email" type="string" required>
+  Email address of the user.
+</ResponseField>
+
+<ResponseField name="photoURL" type="string" optional>
+  URL to the user's profile photo.
+</ResponseField>
+
+<ResponseField name="hogarId" type="string | null" optional>
+  ID of the household the user belongs to, or null if not in any household.
+</ResponseField>
+
+<ResponseField name="puntos" type="number" optional>
+  Total points accumulated by the user from completing tasks.
+</ResponseField>
+
+<ResponseField name="totalTareasRealizadas" type="number" optional>
+  Total count of tasks completed by the user.
+</ResponseField>
+
+## Example
+
+```json
+{
+  "uid": "user_abc123",
+  "nombre": "María López",
+  "email": "maria.lopez@example.com",
+  "photoURL": "https://example.com/photos/maria.jpg",
+  "hogarId": "hogar_456def",
+  "puntos": 250,
+  "totalTareasRealizadas": 15
+}
+```
+
+## Usage
+
+```typescript
+import { Usuario } from '@/app/core/usuarios/models/usuario.model';
+
+const newUsuario: Usuario = {
+  uid: 'firebase_uid_123',
+  nombre: 'Juan Pérez',
+  email: 'juan.perez@example.com',
+  photoURL: 'https://example.com/juan.jpg',
+  hogarId: 'hogar_789',
+  puntos: 0,
+  totalTareasRealizadas: 0
+};
+```
+
+## Notes
+
+- The `uid` is typically managed by Firebase Authentication and should match the authenticated user's ID
+- `puntos` and `totalTareasRealizadas` are used for gamification and leaderboard features
+- A user can only belong to one household at a time (`hogarId`)
+- When a user leaves a household, `hogarId` is set to `null`

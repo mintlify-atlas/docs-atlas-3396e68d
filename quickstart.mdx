@@ -1,80 +1,321 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart Guide
+description: Get up and running with ZenHogar in minutes
 ---
 
-## Get started in three steps
+Welcome to ZenHogar! This guide will walk you through setting up your account, creating your first household, inviting members, and creating your first task.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, make sure you have:
+- A Google account for authentication
+- Access to the ZenHogar application (deployed or running locally)
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+## Get Started in 4 Steps
 
-### Step 2: Deploy your changes
+<Steps>
+  <Step title="Sign in with Google">
+    ZenHogar uses Google authentication for secure, hassle-free login.
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    1. Navigate to the ZenHogar application
+    2. Click the **Sign in with Google** button
+    3. Select your Google account and authorize the application
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    <Note>
+      ZenHogar only requests basic profile information (name, email, and photo) to personalize your experience.
+    </Note>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    The authentication service will automatically create your user profile in Firestore:
 
-### Step 3: Go live
+    ```typescript src/app/core/auth/auth.service.ts
+    async loginGoogle() {
+      const { user } = await firebaseAuthWrapper.signInWithPopup(
+        this.injector,
+        this.auth,
+        new GoogleAuthProvider()
+      );
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+      // Create or update user document
+      await firestoreWrapper.setDoc(ref, {
+        nombre: user.displayName ?? '',
+        displayName: user.displayName ?? '',
+        email: (user.email ?? '').toLowerCase(),
+        photoURL: user.photoURL ?? '',
+        lastLogin: serverTimestamp(),
+        hogarId: null,
+        createdAt: serverTimestamp(),
+      }, { merge: true });
+    }
+    ```
+  </Step>
 
-## Next steps
+  <Step title="Create Your First Household">
+    After signing in, you'll need to create a household to start managing tasks.
 
-Now that you have your docs running, explore these key features:
+    1. Click on **Create Household** or the **+** button
+    2. Fill in the household details:
+       - **Name**: Give your household a memorable name (e.g., "Apartment 4B", "Smith Family")
+       - **Type**: Choose from Familiar, Pareja, Amigos, or Erasmus
+       - **Country**: Select your country
+       - **Province/Region**: Select your province or region
+    3. Click **Create**
+
+    <CodeGroup>
+    ```typescript Household Model
+    export interface Hogar {
+      id?: string;
+      nombre: string;
+      countryCode: string;
+      provincia: string;
+      provinciaCode: string;
+      ownerUid: string;
+      miembros: string[];
+      createdAt: Timestamp | null;
+      tipoHogar?: 'Familiar' | 'Pareja' | 'Amigos' | 'Erasmus';
+      zenPrime?: boolean;
+    }
+    ```
+
+    ```typescript Creating a Household
+    async crearHogar(
+      nombre: string,
+      provincia: string,
+      user: User,
+      tipoHogar?: TipoHogar
+    ): Promise<{ id: string }> {
+      const docDataHogar: Omit<Hogar, 'id'> = {
+        nombre: nombre.trim(),
+        countryCode: cc,
+        provincia,
+        provinciaCode: code,
+        ownerUid: user.uid,
+        miembros: [user.uid],
+        createdAt: serverTimestamp(),
+        tipoHogar: tipoHogar ?? 'Familiar',
+        zenPrime: false,
+      };
+
+      const ref = await addDoc(collection(this.fs, 'hogares'), docDataHogar);
+      
+      // Create default tasks for the household
+      await this.tareasSvc.crearTareasPorDefecto(ref.id, user.uid);
+      
+      return { id: ref.id };
+    }
+    ```
+    </CodeGroup>
+
+    <Note>
+      When you create a household, ZenHogar automatically generates a set of default tasks to help you get started!
+    </Note>
+  </Step>
+
+  <Step title="Invite Household Members">
+    Now that your household is created, invite your roommates, family members, or friends to join.
+
+    1. Click on the **Invite Member** button
+    2. Enter the email address of the person you want to invite
+    3. Click **Send Invitation**
+    4. Share the generated invitation code with them
+
+    The invited person will:
+    1. Sign in with their Google account (using the same email)
+    2. Click **Join Household**
+    3. Enter the invitation code
+    4. Accept to join your household
+
+    <CodeGroup>
+    ```typescript Create Invitation
+    async crearInvitacion(hogarId: string, email: string): Promise<string> {
+      const codigo = uuidv4().slice(0, 8);
+
+      await setDoc(doc(this.fs, 'invitaciones', codigo), {
+        hogarId,
+        email: email.toLowerCase(),
+        codigo,
+        creadoEn: serverTimestamp(),
+        usado: false,
+      });
+
+      return codigo;
+    }
+    ```
+
+    ```typescript Accept Invitation
+    async aceptarCodigo(codigo: string): Promise<void> {
+      const invit = await this.validarCodigo(codigo);
+      if (!invit) throw new Error('Código inválido o ya usado');
+
+      await runTransaction(this.fs, async (trx) => {
+        // Add member to household
+        trx.set(memberRef, {
+          uid: user.uid,
+          codigo,
+          email,
+          joinedAt: serverTimestamp(),
+        });
+
+        // Mark invitation as used
+        trx.update(invRef, {
+          usado: true,
+          usadoPorUid: user.uid,
+          usadoEn: serverTimestamp(),
+        });
+
+        // Update user's household reference
+        trx.set(userRef, {
+          hogarId,
+          totalTareasRealizadasHogar: 0,
+        }, { merge: true });
+      });
+    }
+    ```
+    </CodeGroup>
+
+    <Note>
+      Invitation codes are unique 8-character codes tied to a specific email address and can only be used once.
+    </Note>
+  </Step>
+
+  <Step title="Create and Assign Your First Task">
+    With your household set up and members invited, you're ready to create tasks!
+
+    ### Create a Task
+
+    1. Click **New Task** or the **+** button in the tasks section
+    2. Fill in the task details:
+       - **Name**: What needs to be done (e.g., "Take out trash", "Clean kitchen")
+       - **Description**: Additional details (optional)
+       - **Weight**: Task difficulty/importance (1-5)
+    3. Click **Create Task**
+
+    ### Assign a Task
+
+    You can assign tasks in multiple ways:
+
+    - **Self-assign**: Click on an unassigned task and select yourself
+    - **Assign to member**: Select a household member from the dropdown
+    - **Request assignment**: Send a task request to another member
+
+    <CodeGroup>
+    ```typescript Create Task
+    async crearTarea(data: {
+      nombre: string;
+      descripcion?: string;
+      hogarId: string;
+      peso?: number;
+      creadorUid: string;
+    }): Promise<string> {
+      const payload: Omit<Tarea, 'id'> = {
+        nombre: data.nombre,
+        descripcion: data.descripcion ?? '',
+        completada: false,
+        asignadA: null,
+        hogarId: data.hogarId,
+        createdAt: serverTimestamp(),
+        peso: data.peso,
+        historial: [],
+        valoraciones: [],
+        valoracionesPendientes: [],
+        bloqueadaHastaValoracion: false,
+        personalizada: true,
+        creadorUid: data.creadorUid,
+      };
+
+      const ref = await addDoc(colRef, payload);
+      return ref.id;
+    }
+    ```
+
+    ```typescript Assign Task
+    async asignarTarea(
+      tareaId: string,
+      nuevoUid: string
+    ): Promise<void> {
+      const tareaRef = doc(this.fs, 'tareas', tareaId);
+      const usuarioRef = doc(this.fs, 'usuarios', nuevoUid);
+      const snap = await getDoc(usuarioRef);
+      
+      const user = snap.data() as Usuario;
+
+      await updateDoc(tareaRef, {
+        asignadA: nuevoUid,
+        asignadoNombre: user.nombre,
+        asignadoFotoURL: user.photoURL || null,
+      });
+    }
+    ```
+
+    ```typescript Request Assignment
+    async crearPeticionAsignacion(data: {
+      tareaId: string;
+      hogarId: string;
+      deUid: string;
+      paraUid: string;
+    }): Promise<void> {
+      await setDoc(ref, {
+        tareaId,
+        hogarId,
+        deUid,
+        paraUid,
+        deNombre,
+        paraNombre,
+        estado: 'pendiente',
+        fecha: serverTimestamp(),
+      });
+    }
+    ```
+    </CodeGroup>
+  </Step>
+</Steps>
+
+## Task Completion Flow
+
+Once a task is assigned, here's how the completion workflow works:
+
+1. **Complete the task**: Mark the task as complete when finished
+2. **Request ratings**: Other household members receive a notification to rate the task
+3. **Members rate**: Each member rates the task completion (1-5 stars)
+4. **Points awarded**: The person who completed the task receives points based on the average rating and task weight
+
+```typescript Task Rating System
+// Points are calculated based on rating and task weight
+const PUNTOS_POR_VALORACION = {
+  1: 10,   // Poor
+  2: 25,   // Fair
+  3: 50,   // Good
+  4: 75,   // Very Good
+  5: 100   // Excellent
+};
+
+const puntosBase = PUNTOS_POR_VALORACION[media];
+const puntosOtorgados = puntosBase * taskWeight;
+```
+
+## What's Next?
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation Guide" icon="download" href="/installation">
+    Want to run ZenHogar locally? Check out the installation guide.
+  </Card>
+  
+  <Card title="Core Features" icon="star" href="/features/authentication">
+    Explore all the features ZenHogar has to offer.
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/auth-service">
+    Dive into the technical details and API documentation.
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/configuration/firebase-setup">
+    Set up Firebase and EmailJS for your installation.
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Need Help?
+
+If you run into any issues or have questions:
+
+- Check the [FAQ](/faq) section
+- Review the [Installation Guide](/installation) if running locally
+- Contact support or open an issue on GitHub

@@ -1,0 +1,253 @@
+---
+title: Firebase Setup
+description: Configure Firebase Authentication and Firestore for ZenHogar
+---
+
+ZenHogar uses Firebase for authentication (Google Sign-in) and Firestore as the database. This guide walks you through setting up a Firebase project and integrating it with your application.
+
+## Prerequisites
+
+- A Google account
+- Node.js ≥ 18 installed
+- ZenHogar source code cloned locally
+
+## Create Firebase Project
+
+<Steps>
+  <Step title="Go to Firebase Console">
+    Navigate to the [Firebase Console](https://console.firebase.google.com/) and sign in with your Google account.
+  </Step>
+
+  <Step title="Create a new project">
+    Click **Add project** and enter a project name (e.g., "zenhogar" or "zenhogar-dev").
+    
+    <Note>
+      The project ID will be auto-generated based on your project name. This ID is used in your Firebase configuration.
+    </Note>
+  </Step>
+
+  <Step title="Configure Google Analytics (Optional)">
+    Choose whether to enable Google Analytics for your project. This is optional for ZenHogar.
+  </Step>
+
+  <Step title="Create the project">
+    Click **Create project** and wait for Firebase to set up your project.
+  </Step>
+</Steps>
+
+## Enable Authentication
+
+<Steps>
+  <Step title="Navigate to Authentication">
+    In your Firebase project, go to **Build** > **Authentication** in the left sidebar.
+  </Step>
+
+  <Step title="Get started">
+    Click **Get started** to enable Authentication.
+  </Step>
+
+  <Step title="Enable Google Sign-in">
+    1. Go to the **Sign-in method** tab
+    2. Click on **Google** in the providers list
+    3. Toggle the **Enable** switch
+    4. Enter a project support email
+    5. Click **Save**
+  </Step>
+</Steps>
+
+<Note>
+  ZenHogar is configured to use Google authentication exclusively. The `AuthService` uses `GoogleAuthProvider` from `@angular/fire/auth` (see `auth.service.ts:67`).
+</Note>
+
+## Set Up Firestore Database
+
+<Steps>
+  <Step title="Navigate to Firestore Database">
+    In your Firebase project, go to **Build** > **Firestore Database**.
+  </Step>
+
+  <Step title="Create database">
+    Click **Create database**.
+  </Step>
+
+  <Step title="Choose security mode">
+    Select **Start in test mode** for development. 
+    
+    <Warning>
+      Test mode allows unrestricted access to your database. For production, you must configure proper security rules.
+    </Warning>
+  </Step>
+
+  <Step title="Select location">
+    Choose a Firestore location closest to your users (e.g., `europe-west` for European users).
+    
+    <Note>
+      The location cannot be changed after creation.
+    </Note>
+  </Step>
+
+  <Step title="Create the database">
+    Click **Enable** to create your Firestore database.
+  </Step>
+</Steps>
+
+## Get Firebase Configuration
+
+<Steps>
+  <Step title="Add a web app">
+    1. In the Firebase Console, click the **Settings** gear icon > **Project settings**
+    2. Scroll down to **Your apps** section
+    3. Click the **Web** icon (`</>`)
+    4. Enter an app nickname (e.g., "ZenHogar Web")
+    5. **Check** "Also set up Firebase Hosting" (optional but recommended)
+    6. Click **Register app**
+  </Step>
+
+  <Step title="Copy Firebase configuration">
+    Firebase will display a configuration object. Copy the values:
+
+    ```javascript
+    const firebaseConfig = {
+      apiKey: "AIza...",
+      authDomain: "your-project.firebaseapp.com",
+      projectId: "your-project-id",
+      storageBucket: "your-project.appspot.com",
+      messagingSenderId: "123456789",
+      appId: "1:123456789:web:abc123"
+    };
+    ```
+  </Step>
+
+  <Step title="Configure your environment file">
+    Create `src/environments/environment.local.ts` (or copy from `environment.example.ts`) and add your Firebase configuration:
+
+    ```typescript
+    export const environment = {
+      production: false,
+      firebase: {
+        projectId: 'your-project-id',
+        appId: '1:123456789:web:abc123',
+        storageBucket: 'your-project.appspot.com',
+        apiKey: 'AIza...',
+        authDomain: 'your-project.firebaseapp.com',
+        messagingSenderId: '123456789',
+      },
+      emailjs: {
+        serviceId: 'REPLACE_ME',
+        templateId: 'REPLACE_ME',
+        publicKey: 'REPLACE_ME',
+        templates: {
+          hogarEliminado: 'REPLACE_ME'
+        }
+      }
+    };
+    ```
+
+    <Note>
+      The main `environment.ts` imports from `environment.local.ts`. Never commit `environment.local.ts` to version control.
+    </Note>
+  </Step>
+</Steps>
+
+## Firebase Integration in ZenHogar
+
+ZenHogar integrates Firebase through Angular Fire in `app.config.ts`:
+
+```typescript
+import { initializeApp, provideFirebaseApp } from '@angular/fire/app';
+import { getAuth, provideAuth } from '@angular/fire/auth';
+import { getFirestore, provideFirestore } from '@angular/fire/firestore';
+import { environment } from '../environments/environment';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    // ...
+    provideFirebaseApp(() => initializeApp(environment.firebase)),
+    provideAuth(() => getAuth()),
+    provideFirestore(() => getFirestore()),
+  ]
+};
+```
+
+### Firestore Collections
+
+ZenHogar uses the following Firestore collections:
+
+- **`usuarios`** - User profiles (created on first Google sign-in)
+  - Fields: `nombre`, `email`, `displayName`, `photoURL`, `hogarId`, `lastLogin`, `createdAt`
+- **`hogares`** - Household/group information
+- **`invitaciones`** - Invitation codes for joining households
+- **`tareas`** - Shared tasks within households
+- **`notificaciones`** - User notifications and activity feed
+
+## Production Security Rules
+
+For production deployments, configure Firestore security rules:
+
+<Steps>
+  <Step title="Navigate to Firestore Rules">
+    Go to **Firestore Database** > **Rules** tab.
+  </Step>
+
+  <Step title="Update rules">
+    Replace test mode rules with production-ready rules that validate user authentication and data access.
+
+    <Warning>
+      Never deploy to production with test mode rules. This allows anyone to read/write your database.
+    </Warning>
+  </Step>
+
+  <Step title="Publish rules">
+    Click **Publish** to activate your security rules.
+  </Step>
+</Steps>
+
+## Firebase Hosting (Optional)
+
+ZenHogar includes `firebase.json` configuration for Firebase Hosting:
+
+```json
+{
+  "hosting": {
+    "public": "dist/zenhogar/browser",
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}
+```
+
+To deploy to Firebase Hosting:
+
+```bash
+npm run build
+firebase deploy --only hosting
+```
+
+## Troubleshooting
+
+### Authentication Issues
+
+- **Popup blocked**: Ensure your browser allows popups for your domain
+- **Invalid origin**: Add your domain to authorized domains in Firebase Console > Authentication > Settings
+- **Network error**: Check that Firebase API keys are correct in your environment file
+
+### Firestore Connection Issues
+
+- Verify your `projectId` matches exactly in Firebase Console and environment config
+- Check browser console for CORS or permission errors
+- Ensure Firestore is enabled in your Firebase project
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="EmailJS Setup" icon="envelope" href="/configuration/emailjs-setup">
+    Configure email notifications for invitations
+  </Card>
+  <Card title="Environment Variables" icon="gear" href="/configuration/environment">
+    Complete environment configuration reference
+  </Card>
+</CardGroup>

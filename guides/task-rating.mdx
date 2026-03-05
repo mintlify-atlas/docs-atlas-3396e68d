@@ -1,0 +1,538 @@
+---
+title: Task Rating
+description: Learn how the collaborative task rating system works and how points are calculated
+---
+
+## Overview
+
+ZenHogar uses a collaborative rating system where household members rate each other's completed tasks. This ensures fair point distribution and encourages quality work.
+
+## Rating Workflow
+
+<Steps>
+  <Step title="Member Completes a Task">
+    When a member marks a task as complete, the system identifies who should rate it:
+    
+    ```typescript
+    async finalizarTareaConCancelacion(
+      tarea: TareaDTO,
+      usuarioActual: {
+        uid: string;
+        displayName?: string | null;
+        photoURL?: string | null;
+      },
+      miembros: { uid: string }[],
+    ) {
+      if (!tarea?.id) throw new Error('Tarea sin id');
+      
+      const ahoraIso = new Date().toISOString();
+      const tareaRef = doc(this.fs, 'tareas', tarea.id);
+      
+      // All members except the completer should rate
+      const valoracionesPendientes = (miembros ?? [])
+        .filter((m) => m.uid && m.uid !== tarea.asignadA)
+        .map((m) => m.uid);
+      
+      const historialItem: any = {
+        uid: usuarioActual.uid,
+        nombre: usuarioActual.displayName || 'Usuario desconocido',
+        fotoURL: usuarioActual.photoURL || '',
+        fecha: ahoraIso,
+        completada: true,
+        hogarId: tarea.hogarId,
+      };
+      
+      const batch = writeBatch(this.fs);
+      
+      // If there are members to rate
+      if (valoracionesPendientes.length > 0) {
+        batch.update(tareaRef, {
+          completada: true,
+          historial: [...(tarea.historial || []), historialItem],
+          asignadA: null,
+          asignadoNombre: null,
+          asignadoFotoURL: null,
+          valoraciones: [],
+          valoracionesPendientes,
+          bloqueadaHastaValoracion: true,
+        });
+        
+        await batch.commit();
+        return;
+      }
+      
+      // If no one to rate (single-person household)
+      historialItem.motivo = 'sin_valoradores';
+      
+      batch.update(tareaRef, {
+        completada: false,
+        bloqueadaHastaValoracion: false,
+        valoraciones: [],
+        valoracionesPendientes: [],
+        historial: [...(tarea.historial || []), historialItem],
+        asignadA: null,
+        asignadoNombre: null,
+        asignadoFotoURL: null,
+      });
+      
+      await batch.commit();
+    }
+    ```
+  </Step>
+
+  <Step title="Task Awaits Ratings">
+    The task is now in a special state:
+    - `completada`: true
+    - `bloqueadaHastaValoracion`: true
+    - `valoracionesPendientes`: Array of UIDs who need to rate
+    - Cannot be reassigned until all ratings are submitted
+    
+    <Warning>
+      While awaiting ratings, the task cannot be assigned to anyone. This prevents interference with the rating process.
+    </Warning>
+  </Step>
+
+  <Step title="Members Submit Ratings">
+    Each member who needs to rate opens the rating dialog (`DialogValorarTarea`):
+    
+    ```typescript
+    @Component({
+      selector: 'app-dialog-valorar-tarea',
+      standalone: true,
+      templateUrl: './dialog-valorar-tarea.html',
+      styleUrls: ['./dialog-valorar-tarea.scss'],
+    })
+    export class DialogValorarTarea {
+      valorSeleccionado = 0;
+      comentario = '';
+      guardando = false;
+      
+      estrellas = [
+        { valor: 1, etiqueta: 'Muy mal' },
+        { valor: 2, etiqueta: 'Mal' },
+        { valor: 3, etiqueta: 'Normal' },
+        { valor: 4, etiqueta: 'Bien' },
+        { valor: 5, etiqueta: 'Excelente' },
+      ];
+      
+      seleccionarEstrella(valor: number) {
+        this.valorSeleccionado = valor;
+      }
+      
+      guardarValoracion() {
+        if (this.valorSeleccionado === 0) return;
+        
+        const uid = this.authService.uidActual;
+        if (!uid) return;
+        
+        this.guardando = true;
+        
+        this.tareasService
+          .valorarTarea(
+            this.data.tareaId, 
+            this.valorSeleccionado, 
+            this.comentario.trim(), 
+            uid
+          )
+          .then(() => {
+            this.dialogRef.close({ ok: true });
+          })
+          .catch((err) => {
+            console.error('Error al guardar valoración:', err);
+            this.guardando = false;
+          });
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Backend Processes Rating">
+    The `valorarTarea()` method handles each rating submission:
+    
+    ```typescript
+    valorarTarea(
+      tareaId: string,
+      puntuacion: number,
+      comentario: string,
+      uidActual: string,
+    ): Promise<void> {
+      if (!uidActual) {
+        return Promise.reject(new Error('Modo demo: no se puede valorar tarea.'));
+      }
+      
+      const tareaRef = doc(this.fs, 'tareas', tareaId);
+      
+      return getDoc(tareaRef).then(async (snap) => {
+        if (!snap.exists()) throw new Error('Tarea no encontrada');
+        
+        const tarea = snap.data() as Tarea;
+        const valoraciones = [...(tarea.valoraciones ?? [])];
+        const pendientes = [...(tarea.valoracionesPendientes ?? [])];
+        
+        // 1) Prevent duplicate ratings
+        if (valoraciones.some((v) => v?.uid === uidActual)) {
+          throw new Error('Ya has valorado esta tarea.');
+        }
+        
+        // 2) Verify user is supposed to rate
+        if (!pendientes.includes(uidActual)) {
+          throw new Error('No tienes esta tarea pendiente de valorar.');
+        }
+        
+        // Add this rating
+        valoraciones.push({
+          uid: uidActual,
+          puntos: puntuacion,
+          comentario,
+          fecha: new Date().toISOString(),
+        });
+        
+        // Remove user from pending list
+        const nuevasPendientes = pendientes.filter((uid) => uid !== uidActual);
+        
+        const actualizaciones: Partial<Tarea> = {
+          valoraciones,
+          valoracionesPendientes: nuevasPendientes,
+          bloqueadaHastaValoracion: nuevasPendientes.length > 0,
+        };
+        
+        // Check if this was the last rating
+        if (nuevasPendientes.length === 0) {
+          // Calculate final points and award them
+          await this.procesarValoracionFinal(
+            tarea, 
+            valoraciones, 
+            actualizaciones
+          );
+        }
+        
+        return updateDoc(tareaRef, actualizaciones);
+      });
+    }
+    ```
+  </Step>
+
+  <Step title="Final Rating Calculation">
+    When the last rating is submitted, points are calculated and awarded:
+    
+    ```typescript
+    if (nuevasPendientes.length === 0) {
+      // All ratings are in - calculate average
+      const media = this.mediaValoraciones(valoraciones);
+      const pesoUsado = tarea.peso ?? 1;
+      const base = this.puntosBaseFromRating(media);
+      const puntosOtorgados = base * pesoUsado;
+      
+      const historial = [...(tarea.historial ?? [])];
+      const ultimo = historial[historial.length - 1];
+      
+      if (ultimo?.uid) {
+        const usuarioRef = doc(this.fs, 'usuarios', ultimo.uid);
+        
+        // Award points to the completer
+        await updateDoc(usuarioRef, {
+          puntos: increment(puntosOtorgados),
+          totalTareasRealizadas: increment(1),
+          totalTareasRealizadasHogar: increment(1),
+          actualizadoEn: serverTimestamp(),
+        });
+        
+        // Update history with final rating info
+        historial[historial.length - 1] = {
+          ...ultimo,
+          puntosOtorgados,
+          pesoUsado,
+          puntuacionFinal: media,
+          fechaOtorgados: new Date().toISOString(),
+        };
+        
+        (actualizaciones as any).historial = historial;
+      }
+      
+      // Unassign task so it can be claimed again
+      (actualizaciones as any).asignadA = deleteField();
+      (actualizaciones as any).asignadoNombre = deleteField();
+      (actualizaciones as any).asignadoFotoURL = deleteField();
+      actualizaciones.completada = false;
+    }
+    ```
+  </Step>
+
+  <Step title="Task Returns to Pool">
+    After all ratings are processed:
+    - Points are added to the completer's account
+    - Task statistics are updated
+    - The task is unassigned and available for claiming again
+    - History records the rating and points awarded
+  </Step>
+</Steps>
+
+## Points Calculation
+
+### Base Points by Rating
+
+Each star rating corresponds to base points:
+
+```typescript
+const PUNTOS_POR_VALORACION = {
+  1: 10,  // 1 star = 10 base points
+  2: 20,  // 2 stars = 20 base points
+  3: 30,  // 3 stars = 30 base points
+  4: 40,  // 4 stars = 40 base points
+  5: 50,  // 5 stars = 50 base points
+};
+
+private puntosBaseFromRating(rating: number): number {
+  return PUNTOS_POR_VALORACION[rating] ?? 0;
+}
+```
+
+### Average Rating Calculation
+
+When multiple members rate a task, their ratings are averaged:
+
+```typescript
+private mediaValoraciones(valoraciones: { puntos: number }[]): number {
+  if (!valoraciones.length) return 0;
+  const sum = valoraciones.reduce((s, v) => s + (v.puntos ?? 0), 0);
+  return Math.round(sum / valoraciones.length);
+}
+```
+
+**Example**: If 3 members rate a task with 5, 4, and 5 stars:
+- Sum: 5 + 4 + 5 = 14
+- Average: 14 / 3 = 4.67
+- Rounded: 5 stars
+
+### Weight Multiplier
+
+The task's weight multiplies the base points:
+
+```typescript
+const media = this.mediaValoraciones(valoraciones); // e.g., 4 stars
+const pesoUsado = tarea.peso ?? 1;                  // e.g., 3x
+const base = this.puntosBaseFromRating(media);      // 40 base points
+const puntosOtorgados = base * pesoUsado;           // 40 × 3 = 120 points
+```
+
+### Complete Example
+
+A task with weight 3 is completed and rated by 3 members:
+- Member A rates: 5 stars
+- Member B rates: 4 stars  
+- Member C rates: 5 stars
+
+Calculation:
+1. Average rating: (5 + 4 + 5) / 3 = 4.67 → rounds to 5 stars
+2. Base points for 5 stars: 50 points
+3. Weight multiplier: 3
+4. Final points: 50 × 3 = **150 points**
+
+<Tip>
+  Higher-weight tasks reward more points, so save them for challenging or time-consuming work!
+</Tip>
+
+## Rating Data Model
+
+### Individual Rating
+
+```typescript
+{
+  uid: string;           // UID of the rater
+  puntos: number;        // Star rating (1-5)
+  comentario?: string;   // Optional feedback text
+  fecha: string;         // ISO timestamp of rating
+}
+```
+
+### History Entry with Rating
+
+After all ratings are in, the history entry includes:
+
+```typescript
+{
+  uid: string;                 // Who completed the task
+  nombre: string;              // Their name
+  fotoURL?: string;            // Their photo
+  fecha: string;               // When completed
+  completada: boolean;         // true
+  hogarId: string;             // Household context
+  puntosOtorgados: number;     // Final points awarded
+  pesoUsado: number;           // Weight used in calculation
+  puntuacionFinal: number;     // Average rating (1-5)
+  fechaOtorgados: string;      // When points were awarded
+}
+```
+
+## Edge Cases
+
+### Single-Person Household
+
+If there are no other members to rate:
+
+```typescript
+if (valoracionesPendientes.length === 0) {
+  // No one to rate - mark as complete without points
+  historialItem.motivo = 'sin_valoradores';
+  
+  batch.update(tareaRef, {
+    completada: false,
+    bloqueadaHastaValoracion: false,
+    valoraciones: [],
+    valoracionesPendientes: [],
+    historial: [...(tarea.historial || []), historialItem],
+    asignadA: null,
+    asignadoNombre: null,
+    asignadoFotoURL: null,
+  });
+}
+```
+
+### Member Leaves During Rating
+
+If a member who was supposed to rate leaves the household:
+
+```typescript
+async limpiarValoracionesPendientesDeUsuarioQueSale(
+  hogarId: string,
+  uid: string,
+): Promise<number> {
+  const colT = collection(this.fs, 'tareas').withConverter(tareaConverter);
+  const qT = query(colT, where('hogarId', '==', hogarId));
+  
+  const snap = await getDocs(qT);
+  const batch = writeBatch(this.fs);
+  let count = 0;
+  
+  snap.forEach((docu) => {
+    const t = docu.data() as Tarea;
+    
+    const pendientes = Array.isArray(t.valoracionesPendientes)
+      ? t.valoracionesPendientes
+      : [];
+    if (!pendientes.includes(uid)) return;
+    
+    // Remove leaving member from pending list
+    const nuevasPendientes = pendientes.filter((x) => x !== uid);
+    const ref = doc(this.fs, 'tareas', docu.id);
+    
+    const patch: any = {
+      valoracionesPendientes: nuevasPendientes,
+      bloqueadaHastaValoracion: nuevasPendientes.length > 0,
+    };
+    
+    // If they were the last one, finalize without their rating
+    if (nuevasPendientes.length === 0) {
+      patch.completada = false;
+      patch.bloqueadaHastaValoracion = false;
+    }
+    
+    batch.update(ref, patch);
+    count++;
+  });
+  
+  if (count > 0) await batch.commit();
+  return count;
+}
+```
+
+### Completer Leaves During Rating
+
+If the person who completed the task leaves:
+
+```typescript
+async cancelarValoracionesDeTareasHechasPorUsuarioQueSale(
+  hogarId: string,
+  uid: string,
+): Promise<number> {
+  const colT = collection(this.fs, 'tareas').withConverter(tareaConverter);
+  const qT = query(colT, where('hogarId', '==', hogarId));
+  
+  const snap = await getDocs(qT);
+  const batch = writeBatch(this.fs);
+  let count = 0;
+  
+  snap.forEach((docu) => {
+    const t = docu.data() as Tarea;
+    
+    // Only if awaiting ratings
+    const pendienteValoracion =
+      t.completada === true &&
+      (t.bloqueadaHastaValoracion === true ||
+        (t.valoracionesPendientes?.length ?? 0) > 0);
+    
+    if (!pendienteValoracion) return;
+    
+    const hist = Array.isArray(t.historial) ? t.historial : [];
+    const ultimo = hist.length ? hist[hist.length - 1] : null;
+    
+    // If completed by the leaving user, cancel the rating process
+    const laCompletoElQueSale =
+      ultimo?.completada === true && ultimo?.uid === uid;
+    if (!laCompletoElQueSale) return;
+    
+    const ref = doc(this.fs, 'tareas', docu.id);
+    
+    // Reset rating state
+    batch.update(ref, {
+      valoraciones: [],
+      valoracionesPendientes: [],
+      bloqueadaHastaValoracion: false,
+      completada: false,
+    });
+    
+    count++;
+  });
+  
+  if (count > 0) await batch.commit();
+  return count;
+}
+```
+
+<Note>
+  The system gracefully handles member departures during the rating process to prevent orphaned tasks and ensure data consistency.
+</Note>
+
+## Weekly Points Tracking
+
+Points can be queried by time period (e.g., current week):
+
+```typescript
+getPuntosSemana(hogarId: string, uid: string): Observable<number> {
+  if (!uid) return of(0);
+  const weekStart = this.getWeekStart();
+  
+  return this.getTareasPorHogar(hogarId).pipe(
+    map((tareas) => {
+      return (tareas || []).reduce((acc, t) => {
+        if (!Array.isArray(t.historial) || t.historial.length === 0)
+          return acc;
+        
+        const puntos = t.historial.reduce((sum, h) => {
+          if (h.uid !== uid) return sum;
+          if (typeof h.puntosOtorgados !== 'number') return sum;
+          const fecha = new Date(h.fechaOtorgados ?? h.fecha);
+          if (isNaN(+fecha) || fecha < weekStart) return sum;
+          return sum + h.puntosOtorgados;
+        }, 0);
+        
+        return acc + puntos;
+      }, 0);
+    }),
+  );
+}
+
+private getWeekStart(d = new Date()): Date {
+  const weekStart = new Date(d);
+  const day = weekStart.getDay() || 7;
+  if (day !== 1) weekStart.setDate(weekStart.getDate() - (day - 1));
+  weekStart.setHours(0, 0, 0, 0);
+  return weekStart;
+}
+```
+
+## Related Workflows
+
+- [Task Assignment](/guides/task-assignment) - Assign tasks to members
+- [Managing Tasks](/guides/managing-tasks) - Create and configure tasks
+- [Creating a Household](/guides/creating-household) - Set up your household

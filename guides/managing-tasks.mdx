@@ -1,0 +1,393 @@
+---
+title: Managing Tasks
+description: Learn how to create, edit, and organize household tasks in ZenHogar
+---
+
+## Overview
+
+Tasks are the core of ZenHogar's household management system. This guide covers creating, editing, and organizing tasks for your household.
+
+## Creating Tasks
+
+<Steps>
+  <Step title="Open Task Creation Dialog">
+    Click the "New Task" button to open the task creation dialog (`DialogCrearTareaComponent`).
+    
+    The dialog provides fields for:
+    - Task name (required, 2-60 characters)
+    - Description (optional, up to 240 characters)
+    - Weight/difficulty (1-5 points)
+  </Step>
+
+  <Step title="Fill Task Details">
+    Enter the task information:
+    
+    ```typescript
+    form = new FormGroup({
+      nombre: new FormControl<string>('', {
+        nonNullable: true,
+        validators: [Validators.required, Validators.minLength(2), Validators.maxLength(60)],
+      }),
+      descripcion: new FormControl<string>('', {
+        nonNullable: true,
+        validators: [Validators.maxLength(240)],
+      }),
+      peso: new FormControl<number>(1, {
+        nonNullable: true,
+        validators: [Validators.required],
+      }),
+    });
+    ```
+    
+    **Task Name**: Brief description of the task (e.g., "Clean kitchen", "Walk the dog")
+    
+    **Description**: Additional details or instructions
+    
+    **Weight**: Difficulty rating from 1 (easiest) to 5 (hardest) - affects points awarded
+  </Step>
+
+  <Step title="Submit Task">
+    When the user submits the form, the dialog validates and returns the data:
+    
+    ```typescript
+    onSubmit() {
+      const nombre = (this.nombreCtrl.value || '').trim();
+      const descripcion = (this.descripcionCtrl.value || '').trim();
+      const peso = this.form.controls.peso.value;
+      
+      if (this.form.invalid) {
+        this.form.markAllAsTouched();
+        return;
+      }
+      
+      this.dialogRef.close({
+        nombre,
+        descripcion: descripcion || undefined,
+        peso,
+      });
+    }
+    ```
+  </Step>
+
+  <Step title="Backend Creates Task">
+    The `TareasService.crearTarea()` method persists the task to Firestore:
+    
+    ```typescript
+    async crearTarea(data: {
+      nombre: string;
+      descripcion?: string;
+      hogarId: string;
+      personalizada: boolean;
+      asignadA?: string | null;
+      peso?: number;
+      creadorUid: string;
+      creadorNombre?: string;
+      creadorFotoURL?: string;
+    }): Promise<string> {
+      const colRef = collection(this.fs, 'tareas').withConverter(tareaConverter);
+      
+      const payload: Omit<Tarea, 'id'> = {
+        nombre: data.nombre,
+        descripcion: data.descripcion ?? '',
+        completada: false,
+        asignadA: data.asignadA ?? null,
+        hogarId: data.hogarId,
+        createdAt: serverTimestamp(),
+        asignadoNombre: null,
+        asignadoFotoURL: null,
+        peso: data.peso,
+        historial: [],
+        valoraciones: [],
+        valoracionesPendientes: [],
+        bloqueadaHastaValoracion: false,
+        personalizada: data.personalizada,
+        creadorUid: data.creadorUid,
+        creadorNombre: data.creadorNombre ?? null,
+        creadorFotoURL: data.creadorFotoURL ?? null,
+      };
+      
+      const ref = await addDoc(colRef, payload);
+      return ref.id;
+    }
+    ```
+  </Step>
+
+  <Step title="Task Appears in List">
+    The new task immediately appears in the household's task list, ready to be assigned to members.
+  </Step>
+</Steps>
+
+## Task Data Model
+
+```typescript
+export interface Tarea {
+  id?: string;
+  nombre: string;                    // Task name
+  descripcion?: string;              // Optional description
+  completada: boolean;               // Whether currently marked as done
+  asignadA?: string | null;          // UID of assigned member
+  hogarId: string;                   // Household ID
+  createdAt?: Timestamp;             // Creation timestamp
+  asignadoNombre?: string | null;    // Name of assigned member
+  asignadoFotoURL?: string | null;   // Profile photo of assigned member
+  peso?: number;                     // Difficulty/weight (1-5)
+  personalizada?: boolean;           // Custom vs default task
+  creadorUid: string;                // UID of creator
+  creadorNombre?: string | null;     // Name of creator
+  creadorFotoURL?: string | null;    // Creator's photo
+  
+  // Task history tracking
+  historial?: {
+    uid: string;                     // Who completed it
+    nombre: string;                  // Their name
+    fotoURL?: string;                // Their photo
+    fecha: string;                   // When completed
+    completada: boolean;             // Completion status
+    puntosOtorgados?: number;        // Points awarded
+    pesoUsado?: number;              // Weight used for calculation
+    puntuacionFinal?: number;        // Final rating (1-5)
+    fechaOtorgados?: string;         // When points were given
+    hogarId?: string;                // Household context
+  }[];
+  
+  // Rating system
+  valoraciones?: {
+    uid: string;                     // Who rated
+    puntos: number;                  // Rating (1-5 stars)
+    comentario?: string;             // Optional feedback
+    fecha: string;                   // When rated
+  }[];
+  
+  valoracionesPendientes?: string[]; // UIDs awaiting to rate
+  bloqueadaHastaValoracion?: boolean; // Locked until all ratings complete
+}
+```
+
+## Editing Tasks
+
+Tasks can be edited after creation:
+
+```typescript
+async actualizarTarea(
+  tareaId: string,
+  data: { nombre: string; descripcion?: string; peso?: number },
+): Promise<void> {
+  const currentUser = this.authService.currentUser;
+  if (!currentUser) {
+    throw new Error('Modo demo: no se puede editar tarea.');
+  }
+  
+  if (!tareaId) throw new Error('tareaId requerido');
+  
+  const tareaRef = doc(this.fs, 'tareas', tareaId);
+  
+  const nombre = (data.nombre ?? '').trim();
+  const descripcion = (data.descripcion ?? '').trim();
+  
+  if (!nombre || nombre.length < 2) throw new Error('Nombre inválido');
+  
+  await updateDoc(tareaRef, {
+    nombre,
+    descripcion: descripcion || '',
+    peso: data.peso ?? 1,
+    updatedAt: serverTimestamp(),
+  });
+}
+```
+
+<Note>
+  Editing a task doesn't affect its assignment or completion history. Only the name, description, and weight can be modified.
+</Note>
+
+## Default Tasks
+
+When a household is created, several default tasks are automatically added:
+
+```typescript
+crearTareasPorDefecto(hogarId: string, adminUid: string) {
+  const batch = writeBatch(this.fs);
+  const colRef = collection(this.fs, 'tareas').withConverter(tareaConverter);
+  
+  TAREAS_POR_DEFECTO.forEach((t) => {
+    const ref = doc(colRef);
+    batch.set(ref, {
+      ...t,
+      hogarId,
+      creadorUid: adminUid,
+      createdAt: serverTimestamp(),
+    });
+  });
+  
+  return batch.commit();
+}
+```
+
+Default tasks typically include common household chores like:
+- Cleaning the kitchen
+- Taking out the trash
+- Doing laundry
+- Grocery shopping
+- Vacuuming
+- Cleaning bathrooms
+
+<Tip>
+  Default tasks provide a starting point. You can edit or delete them and create custom tasks specific to your household's needs.
+</Tip>
+
+## Task States
+
+A task can be in several states:
+
+### Unassigned
+- `asignadA` is `null`
+- Available for any member to claim
+- Shows in the "Available Tasks" list
+
+### Assigned
+- `asignadA` contains a user UID
+- Assigned member can complete the task
+- Shows in the member's "My Tasks" list
+
+### Completed (Awaiting Rating)
+- `completada` is `true`
+- `valoracionesPendientes` contains UIDs of members who need to rate
+- `bloqueadaHastaValoracion` is `true`
+- Cannot be reassigned until all ratings are submitted
+
+### Ready for Reassignment
+- All ratings submitted
+- Points awarded to completer
+- Task returns to unassigned state
+- Available for next assignment
+
+## Task History
+
+Every time a task is completed, an entry is added to its history:
+
+```typescript
+const historialItem: any = {
+  uid: usuarioActual.uid,
+  nombre: usuarioActual.displayName || 'Usuario desconocido',
+  fotoURL: usuarioActual.photoURL || '',
+  fecha: new Date().toISOString(),
+  completada: true,
+  hogarId: tarea.hogarId,
+};
+```
+
+After rating is complete, points are added:
+
+```typescript
+historial[historial.length - 1] = {
+  ...ultimo,
+  puntosOtorgados,      // Calculated points
+  pesoUsado,            // Weight multiplier used
+  puntuacionFinal: media, // Average rating from all raters
+  fechaOtorgados: new Date().toISOString(),
+};
+```
+
+## Querying Tasks
+
+### Get All Household Tasks
+
+```typescript
+getTareasPorHogar(
+  hogarId: string,
+  enrich: boolean = true,
+): Observable<TareaDTO[]> {
+  const tareasRef = collection(this.fs, 'tareas').withConverter(tareaConverter);
+  const q = query(tareasRef, where('hogarId', '==', hogarId));
+  
+  return collectionData(q, { idField: 'id' }).pipe(
+    switchMap((tareas: Tarea[]) => {
+      if (!enrich) {
+        return of(tareas.map<TareaDTO>((t) => ({
+          ...t,
+          asignadoNombre: t.asignadoNombre ?? '',
+          asignadoFotoURL: t.asignadoFotoURL ?? '',
+        })));
+      }
+      
+      // Enrich with user profile data
+      const uids = [...new Set(tareas.map((t) => t.asignadA).filter(Boolean))];
+      // ... fetch user profiles and merge
+    }),
+  );
+}
+```
+
+### Get User's Assigned Tasks
+
+```typescript
+getTareasAsignadasUsuario(
+  hogarId: string,
+  uid: string,
+): Observable<TareaDTO[]> {
+  if (!uid) return of([]);
+  return this.getTareasPorHogar(hogarId).pipe(
+    map((tareas) => tareas.filter((t) => t.asignadA === uid)),
+  );
+}
+```
+
+## Task Weight and Points
+
+The task weight determines how many base points can be earned:
+
+```typescript
+const PUNTOS_POR_VALORACION = {
+  1: 10,  // 1 star = 10 base points
+  2: 20,  // 2 stars = 20 base points
+  3: 30,  // 3 stars = 30 base points
+  4: 40,  // 4 stars = 40 base points
+  5: 50,  // 5 stars = 50 base points
+};
+```
+
+Final points calculation:
+
+```typescript
+const media = this.mediaValoraciones(valoraciones); // Average rating
+const pesoUsado = tarea.peso ?? 1;                  // Task weight
+const base = this.puntosBaseFromRating(media);      // Base points for rating
+const puntosOtorgados = base * pesoUsado;           // Final points
+```
+
+**Example**: A task with weight 3 that receives an average rating of 4 stars:
+- Base points: 40
+- Weight multiplier: 3
+- Final points: 40 × 3 = 120 points
+
+<Warning>
+  Changing a task's weight only affects future completions. Past completions retain the weight that was used when they were rated.
+</Warning>
+
+## Task Deletion
+
+Tasks are automatically deleted when:
+- The household is deleted
+- An admin explicitly deletes the task
+
+When a household is deleted, all its tasks are removed:
+
+```typescript
+// Delete all household tasks in batches
+const tareasCol = collection(this.fs, 'tareas');
+const qy = query(tareasCol, where('hogarId', '==', hogarId));
+const s = await getDocs(qy);
+const tareasDocs = s.docs;
+
+for (let i = 0; i < tareasDocs.length; i += 450) {
+  const slice = tareasDocs.slice(i, i + 450);
+  const batch = writeBatch(this.fs);
+  slice.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+}
+```
+
+## Related Workflows
+
+- [Task Assignment](/guides/task-assignment) - Assign tasks to household members
+- [Task Rating](/guides/task-rating) - Rate completed tasks
+- [Creating a Household](/guides/creating-household) - Set up your household

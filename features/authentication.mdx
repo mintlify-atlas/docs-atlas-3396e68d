@@ -1,0 +1,239 @@
+---
+title: Authentication
+description: User authentication and profile management in ZenHogar
+icon: lock
+---
+
+## Overview
+
+ZenHogar uses Firebase Authentication with Google Sign-In to provide secure, seamless user authentication. The authentication system integrates deeply with Firestore to manage user profiles and household associations.
+
+## Authentication Service
+
+The `AuthService` (located at `src/app/core/auth/auth.service.ts`) handles all authentication operations.
+
+### Key Features
+
+<CardGroup cols={2}>
+  <Card title="Google OAuth" icon="google">
+    Secure sign-in using Google accounts with popup-based authentication
+  </Card>
+  <Card title="User Profiles" icon="user">
+    Automatic creation and synchronization of user profiles in Firestore
+  </Card>
+  <Card title="Real-time State" icon="bolt">
+    Observable-based authentication state with RxJS for reactive updates
+  </Card>
+  <Card title="Session Management" icon="shield-check">
+    Automatic session handling with Firebase Auth state persistence
+  </Card>
+</CardGroup>
+
+## Authentication Flow
+
+<Steps>
+  <Step title="User Initiates Sign-In">
+    User clicks the Google Sign-In button, triggering the `loginGoogle()` method.
+  </Step>
+  
+  <Step title="Google Authentication">
+    Firebase opens a popup for Google OAuth authentication. The system handles various popup states including cancellation and closure.
+    
+    ```typescript
+    const { user } = await firebaseAuthWrapper.signInWithPopup(
+      this.injector,
+      this.auth,
+      new GoogleAuthProvider()
+    );
+    ```
+  </Step>
+  
+  <Step title="Profile Creation/Update">
+    After successful authentication, the system checks if the user exists in Firestore:
+    
+    - **New Users**: Creates a complete profile with default values
+    - **Existing Users**: Updates login timestamp and profile information
+    
+    ```typescript
+    const patchBase = {
+      nombre: user.displayName ?? '',
+      displayName: user.displayName ?? '',
+      email: (user.email ?? '').toLowerCase(),
+      photoURL: user.photoURL ?? '',
+      lastLogin: serverTimestamp(),
+    };
+    ```
+  </Step>
+  
+  <Step title="Household Association">
+    New users are initialized with `hogarId: null`, indicating they haven't joined a household yet. Existing users retain their household associations.
+  </Step>
+</Steps>
+
+## User State Management
+
+The authentication system provides two observable streams:
+
+### Firebase User Stream
+
+The `user$` observable tracks the Firebase Authentication state:
+
+```typescript
+user$: Observable<User | null> = authState(this.auth).pipe(
+  shareReplay({ bufferSize: 1, refCount: true })
+);
+```
+
+### Complete User Profile Stream
+
+The `usuarioCompleto$` observable provides the full user profile from Firestore:
+
+```typescript
+usuarioCompleto$: Observable<Usuario | null> = this.user$.pipe(
+  map(u => u?.uid ?? null),
+  distinctUntilChanged(),
+  switchMap(uid => {
+    if (!uid) return of(null);
+    
+    const ref = doc(this.fs, `usuarios/${uid}`);
+    return docData(ref).pipe(
+      catchError(err => {
+        console.error('[AuthService] Firestore error:', err);
+        return of(null);
+      })
+    );
+  }),
+  shareReplay({ bufferSize: 1, refCount: true })
+);
+```
+
+<Note>
+  The `shareReplay` operator ensures that multiple subscribers receive the same authentication state without triggering duplicate queries.
+</Note>
+
+## User Profile Structure
+
+Each user document in Firestore contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `uid` | string | Unique user identifier from Firebase Auth |
+| `nombre` | string | User's display name |
+| `email` | string | User's email (lowercase) |
+| `photoURL` | string | Profile picture URL from Google |
+| `hogarId` | string \| null | ID of the household the user belongs to |
+| `puntos` | number | Points accumulated from completed tasks |
+| `totalTareasRealizadas` | number | Total tasks completed across all households |
+| `totalTareasRealizadasHogar` | number | Tasks completed in current household |
+| `lastLogin` | Timestamp | Last login timestamp |
+| `createdAt` | Timestamp | Account creation timestamp |
+
+## Sign Out
+
+The logout process cleans up the authentication state:
+
+```typescript
+logout() {
+  return firebaseAuthWrapper.signOut(this.injector, this.auth);
+}
+```
+
+<Warning>
+  Signing out does NOT remove the user from their household. The `hogarId` association persists until the user explicitly leaves the household.
+</Warning>
+
+## Public User Profiles
+
+For privacy and performance, ZenHogar provides a method to fetch limited public user information:
+
+```typescript
+getUsuarioPublico$(uid: string): Observable<UsuarioPublico | null> {
+  if (!uid) return of(null);
+  const ref = doc(this.fs, 'usuarios', uid);
+  
+  return docData(ref).pipe(
+    map((u: any) => {
+      if (!u) return null;
+      return {
+        displayName: u.displayName ?? u.nombre ?? null,
+        photoURL: u.photoURL ?? null,
+      } as UsuarioPublico;
+    }),
+    catchError(err => {
+      console.error('[AuthService.getUsuarioPublico$]:', err);
+      return of(null);
+    })
+  );
+}
+```
+
+This method returns only the display name and photo URL, protecting sensitive user information.
+
+## Error Handling
+
+The authentication system gracefully handles common error scenarios:
+
+<Accordion title="Cancelled Popup Request">
+  When users cancel the authentication popup or close it, the system silently returns without throwing an error:
+  
+  ```typescript
+  if (code === 'auth/cancelled-popup-request' || 
+      code === 'auth/popup-closed-by-user') {
+    return;
+  }
+  ```
+</Accordion>
+
+<Accordion title="Concurrent Login Prevention">
+  The service includes a login-in-progress flag to prevent multiple simultaneous authentication attempts:
+  
+  ```typescript
+  private loginEnCurso = false;
+  
+  async loginGoogle() {
+    if (this.loginEnCurso) return;
+    this.loginEnCurso = true;
+    // ... authentication logic
+  }
+  ```
+</Accordion>
+
+## Integration with Angular
+
+The `AuthService` is provided at the root level, making it available throughout the application:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+export class AuthService {
+  // Service implementation
+}
+```
+
+Components can inject and use the service to access authentication state:
+
+```typescript
+constructor(private authService: AuthService) {
+  this.authService.user$.subscribe(user => {
+    if (user) {
+      console.log('User logged in:', user.uid);
+    }
+  });
+}
+```
+
+## Security Considerations
+
+<CardGroup cols={2}>
+  <Card title="Email Normalization" icon="envelope">
+    All emails are stored in lowercase to prevent duplicate accounts with different casing
+  </Card>
+  <Card title="Injection Context" icon="shield">
+    All Firebase operations run within Angular's injection context for proper dependency resolution
+  </Card>
+  <Card title="Error Logging" icon="bug">
+    Authentication errors are logged to the console for debugging while maintaining user privacy
+  </Card>
+  <Card title="State Persistence" icon="database">
+    Firebase Auth automatically persists sessions across browser refreshes
+  </Card>
+</CardGroup>

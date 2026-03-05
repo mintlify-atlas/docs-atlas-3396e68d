@@ -1,0 +1,376 @@
+---
+title: 'Project Structure'
+description: 'Understanding the ZenHogar codebase architecture and organization'
+---
+
+# Project Structure
+
+ZenHogar is built with Angular 20 and follows a modular, feature-based architecture. This guide will help you navigate the codebase effectively.
+
+## Directory Overview
+
+```
+zenhogar/
+├── src/
+│   ├── app/
+│   │   ├── core/              # Core business features
+│   │   ├── shared/            # Shared utilities and components
+│   │   ├── app.config.ts      # App configuration & providers
+│   │   ├── app.routes.ts      # Route definitions
+│   │   └── app.ts             # Root component
+│   ├── assets/                # Static assets (images, flags)
+│   ├── environments/          # Environment configurations
+│   └── main.ts                # Application bootstrap
+├── angular.json               # Angular CLI configuration
+├── firebase.json              # Firebase hosting configuration
+├── package.json               # Dependencies and scripts
+└── tsconfig.json              # TypeScript configuration
+```
+
+## Core Module Structure
+
+The `/src/app/core` directory contains all feature modules organized by domain:
+
+<Accordion title="Authentication (auth/)">
+  **Location:** `src/app/core/auth/`
+  
+  Contains authentication logic using Firebase Auth:
+  - `auth.service.ts` - Google OAuth login, user state management
+  - `firebase-auth-wrapper.ts` - Wrapper for Firebase auth operations
+  - `firestore-wrapper.ts` - Wrapper for Firestore operations
+  
+  **Key Features:**
+  - Google Sign-in with popup
+  - User session management with RxJS observables
+  - Automatic user document creation in Firestore
+</Accordion>
+
+<Accordion title="Hogar (Home) Management (hogar/)">
+  **Location:** `src/app/core/hogar/`
+  
+  **Structure:**
+  ```
+  hogar/
+  ├── component/
+  │   └── crear/              # Create home dialog
+  ├── models/
+  │   └── hogar.model.ts      # Home data model
+  ├── notificaciones/         # Notifications subsystem
+  │   ├── component/
+  │   ├── model/
+  │   └── services/
+  └── services/
+      └── hogar.service.ts    # Home CRUD operations
+  ```
+  
+  **Key Services:**
+  - Create, join, and leave homes
+  - Admin transfer functionality
+  - Home deletion with cleanup
+  - Member management
+</Accordion>
+
+<Accordion title="Tasks Management (tareas/)">
+  **Location:** `src/app/core/tareas/`
+  
+  **Structure:**
+  ```
+  tareas/
+  ├── component/
+  │   ├── historial/          # Task history dialog
+  │   ├── notificaciones/     # Task notifications
+  │   ├── tareas/             # Main tasks components
+  │   │   ├── crear-tarea/    # Create task dialog
+  │   │   ├── limite-tarea/   # Task limit dialog
+  │   │   ├── peticiones/     # Assignment requests
+  │   │   ├── lista-tareas.component.ts
+  │   │   └── tarjeta-tarea.component.ts
+  │   └── valoraciones/       # Task ratings
+  ├── models/
+  │   ├── tarea.model.ts      # Task data model
+  │   └── peticion-asignacion.model.ts
+  ├── services/
+  │   └── tareas.service.ts   # Task CRUD and business logic
+  └── utilidades/             # Task utilities
+  ```
+  
+  **Key Features:**
+  - Task creation and assignment
+  - Task completion with history tracking
+  - Rating system for completed tasks
+  - Default tasks creation for new homes
+</Accordion>
+
+<Accordion title="Invitations (invitaciones/)">
+  **Location:** `src/app/core/invitaciones/`
+  
+  Handles invitation system for adding members to homes:
+  - Generate invitation codes
+  - Email invitations via EmailJS
+  - Code validation and redemption
+</Accordion>
+
+<Accordion title="Store/Rewards (tienda/)">
+  **Location:** `src/app/core/tienda/`
+  
+  Points-based reward system:
+  - Predefined rewards catalog
+  - Custom rewards per home
+  - Point redemption tracking
+  - History of exchanges
+</Accordion>
+
+<Accordion title="Users (usuarios/)">
+  **Location:** `src/app/core/usuarios/`
+  
+  User profile management:
+  - `models/usuario.model.ts` - User data structure
+  - Integration with Firebase Auth profiles
+</Accordion>
+
+## Shared Module
+
+**Location:** `src/app/shared/`
+
+<CodeGroup>
+```typescript shared/dialog-confirm/dialog-confirm.component.ts
+// Reusable confirmation dialog
+export interface DialogConfirmData {
+  title: string;
+  message: string;
+  confirmText?: string;
+  cancelText?: string;
+}
+```
+
+```typescript shared/email/email.service.ts
+// EmailJS integration for notifications
+@Injectable({ providedIn: 'root' })
+export class EmailService {
+  // Send invitation emails
+  // Send home deletion notifications
+  // Other email triggers
+}
+```
+
+```typescript shared/constants/subdivisiones.ts
+// Country and region data for home creation
+export const SUBDIVISIONS = {
+  ES: [...], // Spanish provinces
+  MX: [...], // Mexican states
+  // Other countries
+};
+```
+</CodeGroup>
+
+## Data Models
+
+### Hogar (Home) Model
+
+```typescript src/app/core/hogar/models/hogar.model.ts
+export type TipoHogar = 'Familiar' | 'Pareja' | 'Amigos' | 'Erasmus';
+
+export interface Hogar {
+  id?: string;
+  nombre: string;
+  countryCode: string;
+  provincia: string;
+  provinciaCode: string;
+  ownerUid: string;           // Admin user ID
+  miembros: string[];         // Array of member UIDs
+  adminUid: string;
+  createdAt: Timestamp | null;
+  tipoHogar?: TipoHogar;
+  zenPrime?: boolean;
+}
+```
+
+### Tarea (Task) Model
+
+```typescript src/app/core/tareas/models/tarea.model.ts
+export interface Tarea {
+  id?: string;
+  nombre: string;
+  descripcion?: string;
+  completada: boolean;
+  asignadA?: string | null;   // Assigned user UID
+  hogarId: string;
+  createdAt?: Timestamp | FieldValue;
+  peso?: number;              // Task weight for points
+  personalizada?: boolean;
+  creadorUid: string;
+  
+  // Task completion history
+  historial?: {
+    uid: string;
+    nombre: string;
+    fotoURL?: string;
+    fecha: string;
+    completada: boolean;
+    puntosOtorgados?: number;
+    pesoUsado?: number;
+    puntuacionFinal?: number;
+    fechaOtorgados?: string;
+    hogarId?: string;
+  }[];
+  
+  // Task ratings
+  valoraciones?: {
+    uid: string;
+    puntos: number;
+    comentario?: string;
+    fecha: string;
+  }[];
+  
+  valoracionesPendientes?: string[];
+  bloqueadaHastaValoracion?: boolean;
+}
+```
+
+### Usuario (User) Model
+
+```typescript src/app/core/usuarios/models/usuario.model.ts
+export interface Usuario {
+  uid: string;
+  nombre: string;
+  email: string;
+  photoURL?: string;
+  hogarId?: string | null;
+  puntos?: number;
+  totalTareasRealizadas?: number;
+}
+```
+
+## Angular Architecture
+
+### Standalone Components
+
+ZenHogar uses Angular's standalone components architecture (no NgModules):
+
+```typescript src/app/app.ts
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [
+    CommonModule,
+    FormsModule,
+    MatDialogModule,
+    ListaTareasComponent,
+    // Direct component imports
+  ],
+  templateUrl: './app.html',
+  styleUrls: ['./app.scss'],
+})
+export class App implements OnInit, OnDestroy {
+  // Component logic
+}
+```
+
+### Dependency Injection
+
+Services are provided at root level for singleton pattern:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+export class AuthService {
+  private auth = inject(Auth);
+  private fs = inject(Firestore);
+  // Modern inject() function instead of constructor injection
+}
+```
+
+### Reactive State Management
+
+Using RxJS observables for reactive data flow:
+
+```typescript src/app/app.ts
+user$ = this.auth.user$;
+hogar$ = this.hogarSvc.getHogarState$();
+
+isAdmin$ = combineLatest([this.user$, this.hogar$]).pipe(
+  map(([u, h]) => !!u && !!h && u.uid === h.ownerUid)
+);
+```
+
+## Configuration Files
+
+### Angular Configuration
+
+<Note>
+The `angular.json` file at `~/workspace/source/angular.json` defines build configurations, asset paths, and development server settings.
+</Note>
+
+**Key configurations:**
+- **Output path:** `dist/zenhogar/browser` (matches Firebase hosting)
+- **Style preprocessor:** SCSS with Material theme
+- **Build budgets:** 2MB warning, 3MB error for initial bundle
+- **Assets:** Includes `src/assets`, `public/`, and `favicon.ico`
+
+### TypeScript Configuration
+
+ZenHogar uses TypeScript 5.8.2 with strict mode enabled:
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "lib": ["ES2022", "dom"],
+    "strict": true,
+    "esModuleInterop": true
+  }
+}
+```
+
+## NPM Scripts
+
+```json package.json
+{
+  "scripts": {
+    "start": "ng serve",           // Development server
+    "build": "ng build",           // Production build
+    "watch": "ng build --watch --configuration development",
+    "test": "ng test",             // Run unit tests
+    "lint": "ng lint",             // Run ESLint
+    "prepare": "husky"             // Git hooks setup
+  }
+}
+```
+
+## Code Quality Tools
+
+<Steps>
+  <Step title="Prettier">
+    Automatic code formatting on commit via lint-staged
+    
+    Configured for TypeScript, HTML (Angular parser), SCSS, CSS, Markdown, and JSON
+  </Step>
+  
+  <Step title="ESLint">
+    Linting with Prettier integration (`eslint-config-prettier`)
+    
+    Run manually with `npm run lint`
+  </Step>
+  
+  <Step title="Husky">
+    Git hooks for pre-commit validation
+    
+    Automatically formats files before commit
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Firebase Integration" icon="fire" href="/guides/firebase-integration">
+    Learn how Firebase Auth and Firestore are integrated
+  </Card>
+  
+  <Card title="Adding Features" icon="code" href="/guides/adding-features">
+    Step-by-step guide to extending ZenHogar
+  </Card>
+  
+  <Card title="Deployment" icon="rocket" href="/guides/deployment">
+    Deploy to Firebase Hosting
+  </Card>
+</CardGroup>

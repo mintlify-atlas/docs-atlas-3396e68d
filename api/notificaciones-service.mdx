@@ -1,0 +1,579 @@
+---
+title: 'NotificacionesService'
+description: 'Manages in-app notifications for home activities like reward redemptions'
+icon: 'bell'
+---
+
+## Overview
+
+The `NotificacionesService` manages in-app notifications within a home. Currently focused on reward redemption notifications ("canjes"), it provides streams for real-time notification updates and methods for marking notifications as seen.
+
+**Location**: `src/app/core/hogar/notificaciones/services/notificaciones.service.ts`
+
+**Injectable**: `{ providedIn: 'root' }`
+
+---
+
+## Creating Notifications
+
+### crearNotificacionCanje()
+
+<ParamField path="crearNotificacionCanje(hogarId, payload)" type="Promise<void>">
+  Creates a notification when a user redeems a reward.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+  <ResponseField name="payload" type="object" required>
+    Notification data object
+  </ResponseField>
+</Expandable>
+
+<Expandable title="payload properties">
+  <ResponseField name="actorUid" type="string" required>
+    UID of user who redeemed the reward
+  </ResponseField>
+  <ResponseField name="actorNombre" type="string" required>
+    Name of user who redeemed
+  </ResponseField>
+  <ResponseField name="recompensaId" type="string" required>
+    ID of the redeemed reward
+  </ResponseField>
+  <ResponseField name="recompensaTitulo" type="string" required>
+    Title/name of the reward
+  </ResponseField>
+  <ResponseField name="coste" type="number" required>
+    Points cost of the reward
+  </ResponseField>
+</Expandable>
+
+**Side Effects**:
+- Creates notification document in `hogares/{hogarId}/notificaciones`
+- Sets `tipo: 'canje'`
+- Initializes `vistoPor` map with actor's UID marked as `true`
+- Records server timestamp
+
+**Example**:
+```typescript
+import { NotificacionesService } from '@core/hogar/notificaciones/services/notificaciones.service';
+
+@Component({ ... })
+export class RewardsComponent {
+  constructor(
+    private notificacionesService: NotificacionesService
+  ) {}
+
+  async redeemReward(reward: any, currentUser: any) {
+    // First, deduct points and mark reward as redeemed
+    // ...
+    
+    // Then create notification
+    await this.notificacionesService.crearNotificacionCanje(
+      currentUser.hogarId,
+      {
+        actorUid: currentUser.uid,
+        actorNombre: currentUser.nombre,
+        recompensaId: reward.id,
+        recompensaTitulo: reward.titulo,
+        coste: reward.coste
+      }
+    );
+    
+    console.log('Reward redeemed and notification created');
+  }
+}
+```
+
+---
+
+## Querying Notifications
+
+### notificaciones$()
+
+<ParamField path="notificaciones$(hogarId)" type="Observable<NotificacionDTO[]>">
+  Returns a stream of all notifications for a home, limited to the 30 most recent.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<NotificacionDTO[]>` - Ordered by creation date (newest first), limited to 30
+
+**Example**:
+```typescript
+this.notificacionesService.notificaciones$(hogarId)
+  .subscribe(notifications => {
+    console.log(`${notifications.length} recent notifications`);
+  });
+```
+
+---
+
+### notificacionesPendientes$()
+
+<ParamField path="notificacionesPendientes$(hogarId, uid)" type="Observable<NotificacionDTO[]>">
+  Returns notifications that a specific user hasn't seen yet.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+  <ResponseField name="uid" type="string" required>
+    User ID to check
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<NotificacionDTO[]>` - Notifications where `vistoPor[uid]` is not `true`
+
+**Example**:
+```typescript
+import { Component, OnInit } from '@angular/core';
+import { NotificacionesService } from '@core/hogar/notificaciones/services/notificaciones.service';
+import { AuthService } from '@core/auth/auth.service';
+
+@Component({
+  selector: 'app-notification-badge',
+  template: `
+    <div class="notification-icon" [class.has-pending]="hasPending">
+      <i class="bell-icon"></i>
+      <span *ngIf="pendingCount > 0" class="badge">
+        {{ pendingCount }}
+      </span>
+    </div>
+  `
+})
+export class NotificationBadgeComponent implements OnInit {
+  pendingCount = 0;
+  hasPending = false;
+  
+  constructor(
+    private notificacionesService: NotificacionesService,
+    private authService: AuthService
+  ) {}
+  
+  ngOnInit() {
+    // Assuming you have hogarId available
+    const hogarId = 'home-123';
+    const uid = this.authService.uidActual!;
+    
+    this.notificacionesService.notificacionesPendientes$(hogarId, uid)
+      .subscribe(pending => {
+        this.pendingCount = pending.length;
+        this.hasPending = pending.length > 0;
+      });
+  }
+}
+```
+
+---
+
+### canjes$()
+
+<ParamField path="canjes$(hogarId)" type="Observable<NotificacionDTO[]>">
+  Returns only redemption notifications from the 30 most recent notifications.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<NotificacionDTO[]>` - Filtered to `tipo === 'canje'`
+
+**Example**:
+```typescript
+this.notificacionesService.canjes$(hogarId)
+  .subscribe(redemptions => {
+    console.log('Recent redemptions:', redemptions.length);
+  });
+```
+
+---
+
+### canjesRecientes$()
+
+<ParamField path="canjesRecientes$(hogarId, take?)" type="Observable<NotificacionDTO[]>">
+  Returns the most recent redemption notifications.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+  <ResponseField name="take" type="number" default="6">
+    Number of notifications to retrieve
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<NotificacionDTO[]>` - Most recent redemptions, ordered by date
+
+**Example**:
+```typescript
+// Get last 10 redemptions
+this.notificacionesService.canjesRecientes$(hogarId, 10)
+  .subscribe(recent => {
+    console.log('Last 10 redemptions:', recent);
+  });
+```
+
+---
+
+### canjesHistorial$()
+
+<ParamField path="canjesHistorial$(hogarId, take?)" type="Observable<NotificacionDTO[]>">
+  Returns redemption history for a home.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+  <ResponseField name="take" type="number" default="50">
+    Maximum number of records to retrieve
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<NotificacionDTO[]>` - Redemption history
+
+**Example**:
+```typescript
+this.notificacionesService.canjesHistorial$(hogarId, 100)
+  .subscribe(history => {
+    console.log('Redemption history:', history.length, 'entries');
+  });
+```
+
+---
+
+### canjesCount$()
+
+<ParamField path="canjesCount$(hogarId)" type="Observable<number>">
+  Returns the total count of redemption notifications.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+</Expandable>
+
+**Returns**: `Observable<number>` - Total number of redemptions
+
+**Example**:
+```typescript
+this.notificacionesService.canjesCount$(hogarId)
+  .subscribe(count => {
+    console.log('Total redemptions:', count);
+  });
+```
+
+---
+
+## Marking as Seen
+
+### marcarComoVista()
+
+<ParamField path="marcarComoVista(hogarId, notiId, uid)" type="Promise<void>">
+  Marks a notification as seen by a specific user.
+</ParamField>
+
+**Parameters**:
+<Expandable title="Parameters">
+  <ResponseField name="hogarId" type="string" required>
+    ID of the home
+  </ResponseField>
+  <ResponseField name="notiId" type="string" required>
+    ID of the notification
+  </ResponseField>
+  <ResponseField name="uid" type="string" required>
+    User ID marking as seen
+  </ResponseField>
+</Expandable>
+
+**Side Effects**:
+- Updates `vistoPor.{uid}` to `true` in the notification document
+- Notification will no longer appear in `notificacionesPendientes$()` for that user
+
+**Example**:
+```typescript
+async markNotificationAsSeen(notificationId: string) {
+  const hogarId = this.currentHogarId;
+  const uid = this.authService.uidActual!;
+  
+  await this.notificacionesService.marcarComoVista(
+    hogarId,
+    notificationId,
+    uid
+  );
+  
+  console.log('Notification marked as seen');
+}
+```
+
+---
+
+## Types
+
+### NotificacionDTO Interface
+
+<Expandable title="NotificacionDTO Properties">
+  <ResponseField name="id" type="string">
+    Notification document ID
+  </ResponseField>
+  <ResponseField name="tipo" type="NotificacionTipo">
+    Notification type: 'canje', 'aceptada', or 'rechazo'
+  </ResponseField>
+  <ResponseField name="hogarId" type="string">
+    ID of the home
+  </ResponseField>
+  <ResponseField name="createdAt" type="Timestamp">
+    Creation timestamp
+  </ResponseField>
+  <ResponseField name="actorUid" type="string">
+    UID of user who triggered the notification
+  </ResponseField>
+  <ResponseField name="actorNombre" type="string">
+    Name of actor
+  </ResponseField>
+  <ResponseField name="recompensaId" type="string">
+    ID of related reward (for 'canje' type)
+  </ResponseField>
+  <ResponseField name="recompensaTitulo" type="string">
+    Title of reward (for 'canje' type)
+  </ResponseField>
+  <ResponseField name="coste" type="number">
+    Points cost (for 'canje' type)
+  </ResponseField>
+  <ResponseField name="vistoPor" type="Record<string, true>">
+    Map of UIDs who have seen this notification
+  </ResponseField>
+</Expandable>
+
+### NotificacionTipo Type
+
+```typescript
+type NotificacionTipo = 'canje' | 'aceptada' | 'rechazo';
+```
+
+Current implementation focuses on `'canje'` (redemption) notifications.
+
+---
+
+## Complete Example
+
+```typescript
+import { Component, OnInit } from '@angular/core';
+import { NotificacionesService } from '@core/hogar/notificaciones/services/notificaciones.service';
+import { AuthService } from '@core/auth/auth.service';
+import { HogarService } from '@core/hogar/services/hogar.service';
+
+@Component({
+  selector: 'app-notifications',
+  template: `
+    <div class="notifications-panel">
+      <h2>
+        Notifications
+        <span *ngIf="pendingCount > 0" class="badge">
+          {{ pendingCount }} new
+        </span>
+      </h2>
+      
+      <div *ngFor="let notif of notifications$ | async" 
+           class="notification"
+           [class.unread]="!notif.vistoPor?.[currentUid]"
+           (click)="markAsSeen(notif.id!)">
+        
+        <div class="notification-content">
+          <strong>{{ notif.actorNombre }}</strong> 
+          redeemed 
+          <strong>{{ notif.recompensaTitulo }}</strong>
+          for {{ notif.coste }} points
+        </div>
+        
+        <div class="notification-time">
+          {{ notif.createdAt | date:'short' }}
+        </div>
+      </div>
+      
+      <div class="stats">
+        <p>Total redemptions: {{ totalRedemptions$ | async }}</p>
+      </div>
+    </div>
+  `
+})
+export class NotificationsComponent implements OnInit {
+  notifications$!: Observable<NotificacionDTO[]>;
+  pendingCount = 0;
+  totalRedemptions$!: Observable<number>;
+  currentUid = '';
+  hogarId = '';
+  
+  constructor(
+    private notificacionesService: NotificacionesService,
+    private authService: AuthService,
+    private hogarService: HogarService
+  ) {}
+  
+  ngOnInit() {
+    this.currentUid = this.authService.uidActual!;
+    
+    // Get current home ID
+    this.hogarService.getHogar$().subscribe(hogar => {
+      if (hogar) {
+        this.hogarId = hogar.id!;
+        this.setupNotifications();
+      }
+    });
+  }
+  
+  setupNotifications() {
+    // All notifications
+    this.notifications$ = this.notificacionesService.notificaciones$(
+      this.hogarId
+    );
+    
+    // Pending count
+    this.notificacionesService.notificacionesPendientes$(
+      this.hogarId,
+      this.currentUid
+    ).subscribe(pending => {
+      this.pendingCount = pending.length;
+    });
+    
+    // Total redemptions
+    this.totalRedemptions$ = this.notificacionesService.canjesCount$(
+      this.hogarId
+    );
+  }
+  
+  async markAsSeen(notificationId: string) {
+    await this.notificacionesService.marcarComoVista(
+      this.hogarId,
+      notificationId,
+      this.currentUid
+    );
+  }
+}
+```
+
+### Redemption History Page
+
+```typescript
+import { Component, OnInit } from '@angular/core';
+import { NotificacionesService } from '@core/hogar/notificaciones/services/notificaciones.service';
+
+@Component({
+  selector: 'app-redemption-history',
+  template: `
+    <div class="history-page">
+      <h1>Redemption History</h1>
+      
+      <div class="summary">
+        <p>Total: {{ totalCount$ | async }} redemptions</p>
+      </div>
+      
+      <div class="recent-section">
+        <h2>Recent Activity</h2>
+        <div *ngFor="let redemption of recent$ | async">
+          <div class="redemption-card">
+            <img [src]="getUserPhoto(redemption.actorUid)" alt="">
+            <div>
+              <h3>{{ redemption.recompensaTitulo }}</h3>
+              <p>{{ redemption.actorNombre }} - {{ redemption.coste }} points</p>
+              <small>{{ redemption.createdAt | date:'medium' }}</small>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="full-history">
+        <h2>Full History</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Member</th>
+              <th>Reward</th>
+              <th>Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let item of history$ | async">
+              <td>{{ item.createdAt | date:'short' }}</td>
+              <td>{{ item.actorNombre }}</td>
+              <td>{{ item.recompensaTitulo }}</td>
+              <td>{{ item.coste }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `
+})
+export class RedemptionHistoryComponent implements OnInit {
+  recent$!: Observable<NotificacionDTO[]>;
+  history$!: Observable<NotificacionDTO[]>;
+  totalCount$!: Observable<number>;
+  hogarId = 'home-123';  // Get from auth/hogar service
+  
+  constructor(
+    private notificacionesService: NotificacionesService
+  ) {}
+  
+  ngOnInit() {
+    // Last 6 redemptions
+    this.recent$ = this.notificacionesService.canjesRecientes$(
+      this.hogarId,
+      6
+    );
+    
+    // Full history (last 50)
+    this.history$ = this.notificacionesService.canjesHistorial$(
+      this.hogarId,
+      50
+    );
+    
+    // Total count
+    this.totalCount$ = this.notificacionesService.canjesCount$(
+      this.hogarId
+    );
+  }
+  
+  getUserPhoto(uid: string): string {
+    // Implementation to get user photo
+    return '';
+  }
+}
+```
+
+---
+
+## Firebase Integration
+
+The service integrates with:
+- **Subcollection**: `hogares/{hogarId}/notificaciones`
+- **Queries**: Ordered by `createdAt` descending
+- **Limits**: Default limits prevent excessive data fetching
+- **Real-time**: All observables use `collectionData()` for live updates
+
+---
+
+## See Also
+
+- [HogarService](/api/hogar-service)
+- [AuthService](/api/auth-service)
+- [Firebase Subcollections](https://firebase.google.com/docs/firestore/data-model#subcollections)

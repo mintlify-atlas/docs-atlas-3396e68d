@@ -1,0 +1,550 @@
+---
+title: 'Firebase Integration'
+description: 'How ZenHogar integrates Firebase Authentication and Firestore'
+---
+
+# Firebase Integration
+
+ZenHogar uses Firebase as its backend-as-a-service, leveraging Firebase Authentication for user management and Cloud Firestore for data storage.
+
+## Firebase Setup
+
+### Configuration
+
+Firebase is configured in the environment files:
+
+<CodeGroup>
+```typescript src/environments/environment.example.ts
+export const environment = {
+  production: false,
+  firebase: {
+    projectId: 'REPLACE_ME',
+    appId: 'REPLACE_ME',
+    storageBucket: 'REPLACE_ME',
+    apiKey: 'REPLACE_ME',
+    authDomain: 'REPLACE_ME',
+    messagingSenderId: 'REPLACE_ME',
+  },
+  emailjs: {
+    serviceId: 'REPLACE_ME',
+    templateId: 'REPLACE_ME',
+    publicKey: 'REPLACE_ME'
+  }
+};
+```
+
+```typescript src/environments/environment.ts
+// Actual configuration (gitignored)
+// Copy from environment.example.ts and fill with your credentials
+```
+</CodeGroup>
+
+<Warning>
+Never commit `environment.ts` with real credentials. The actual environment file is gitignored.
+</Warning>
+
+### Application Configuration
+
+Firebase is initialized in the app configuration using AngularFire:
+
+```typescript src/app/app.config.ts
+import { ApplicationConfig, provideZonelessChangeDetection } from '@angular/core';
+import { provideRouter } from '@angular/router';
+import { initializeApp, provideFirebaseApp } from '@angular/fire/app';
+import { getAuth, provideAuth } from '@angular/fire/auth';
+import { getFirestore, provideFirestore } from '@angular/fire/firestore';
+import { environment } from '../environments/environment';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideZonelessChangeDetection(),
+    provideRouter(routes),
+    
+    // Firebase providers
+    provideFirebaseApp(() => initializeApp(environment.firebase)),
+    provideAuth(() => getAuth()),
+    provideFirestore(() => getFirestore()),
+  ]
+};
+```
+
+<Note>
+ZenHogar uses Angular's **zoneless change detection** for better performance. This is why Firebase operations are wrapped to ensure proper injection context.
+</Note>
+
+## Firebase Authentication
+
+### Auth Service Architecture
+
+The `AuthService` manages user authentication state:
+
+```typescript src/app/core/auth/auth.service.ts
+import { Injectable, inject, Injector, runInInjectionContext } from '@angular/core';
+import { Auth, GoogleAuthProvider, authState } from '@angular/fire/auth';
+import { Firestore, doc, docData, getDoc, serverTimestamp } from '@angular/fire/firestore';
+import { Observable } from 'rxjs';
+
+@Injectable({ providedIn: 'root' })
+export class AuthService {
+  private auth = inject(Auth);
+  private fs = inject(Firestore);
+  private injector = inject(Injector);
+
+  // Observable of current Firebase Auth user
+  user$: Observable<User | null> = authState(this.auth).pipe(
+    shareReplay({ bufferSize: 1, refCount: true })
+  );
+
+  // Observable of full user document from Firestore
+  usuarioCompleto$: Observable<Usuario | null> = this.user$.pipe(
+    map(u => u?.uid ?? null),
+    distinctUntilChanged(),
+    switchMap(uid => {
+      if (!uid) return of(null);
+      
+      return runInInjectionContext(this.injector, () => {
+        const ref = doc(this.fs, `usuarios/${uid}`);
+        return (docData(ref) as Observable<Usuario>).pipe(
+          catchError(err => {
+            console.error('[AuthService.usuarioCompleto$] Firestore:', err);
+            return of(null);
+          })
+        );
+      });
+    }),
+    shareReplay({ bufferSize: 1, refCount: true })
+  );
+}
+```
+
+### Google Sign-In Flow
+
+<Steps>
+  <Step title="User clicks login button">
+    Triggers `AuthService.loginGoogle()`
+  </Step>
+  
+  <Step title="Google OAuth popup">
+    ```typescript
+    const { user } = await firebaseAuthWrapper.signInWithPopup(
+      this.injector,
+      this.auth,
+      new GoogleAuthProvider()
+    );
+    ```
+  </Step>
+  
+  <Step title="Create/Update user document">
+    ```typescript
+    const ref = runInInjectionContext(this.injector, () =>
+      doc(this.fs, `usuarios/${user.uid}`)
+    );
+    
+    await firestoreWrapper.setDoc(ref, {
+      nombre: user.displayName ?? '',
+      email: user.email.toLowerCase(),
+      photoURL: user.photoURL ?? '',
+      hogarId: null,
+      lastLogin: serverTimestamp(),
+      createdAt: serverTimestamp(),
+    }, { merge: true });
+    ```
+  </Step>
+  
+  <Step title="User state propagates">
+    All components subscribing to `user$` or `usuarioCompleto$` automatically update
+  </Step>
+</Steps>
+
+### Firebase Auth Wrapper
+
+Due to Angular's zoneless mode, Firebase operations need injection context:
+
+```typescript src/app/core/auth/firebase-auth-wrapper.ts
+import { runInInjectionContext, Injector } from '@angular/core';
+import { signInWithPopup, signOut, Auth } from '@angular/fire/auth';
+
+export const firebaseAuthWrapper = {
+  signInWithPopup: (injector: Injector, auth: Auth, provider: any) => {
+    return runInInjectionContext(injector, () =>
+      signInWithPopup(auth, provider)
+    );
+  },
+  
+  signOut: (injector: Injector, auth: Auth) => {
+    return runInInjectionContext(injector, () => signOut(auth));
+  },
+};
+```
+
+## Cloud Firestore
+
+### Database Structure
+
+ZenHogar uses the following Firestore collections:
+
+```
+firestore/
+├── usuarios/                    # User profiles
+│   └── {uid}/
+│       ├── (fields: nombre, email, hogarId, puntos, ...)
+│       └── historialHogares/    # Subcollection: past home memberships
+│           └── {hogarId}
+├── hogares/                     # Homes
+│   └── {hogarId}/
+│       ├── (fields: nombre, ownerUid, miembros[], ...)
+│       ├── miembros/            # Subcollection: member details
+│       │   └── {uid}
+│       ├── eventos/             # Subcollection: admin actions log
+│       │   └── {eventId}
+│       ├── notificaciones/      # Subcollection: activity feed
+│       │   └── {notifId}
+│       └── recompensasPersonalizadas/  # Subcollection: custom rewards
+│           └── {recompensaId}
+├── tareas/                      # Tasks (global collection)
+│   └── {tareaId}
+│       └── (fields: nombre, hogarId, asignadA, historial[], ...)
+├── invitaciones/                # Invitation codes
+│   └── {invitacionId}
+│       └── (fields: codigo, hogarId, creadorUid, ...)
+└── peticionesAsignacion/        # Task assignment requests
+    └── {peticionId}
+        └── (fields: tareaId, solicitanteUid, ...)
+```
+
+### Firestore Service Pattern
+
+All services follow this pattern for Firestore operations:
+
+```typescript src/app/core/hogar/services/hogar.service.ts
+@Injectable({ providedIn: 'root' })
+export class HogarService {
+  private fs = inject(Firestore);
+  private auth = inject(Auth);
+  private injector = inject(EnvironmentInjector);
+
+  // Helper for injection context
+  private inCtx<T>(fn: () => T): T {
+    return runInInjectionContext(this.injector, fn);
+  }
+
+  private inCtxAsync<T>(fn: () => Promise<T>): Promise<T> {
+    return runInInjectionContext(this.injector, fn);
+  }
+
+  // Observable Firestore query
+  getHogar$(): Observable<Hogar | null> {
+    return this.inCtx(() => {
+      return authState(this.auth).pipe(
+        switchMap((user) => {
+          if (!user?.uid) return of(null);
+          
+          const userRef = doc(this.fs, `usuarios/${user.uid}`);
+          return docData(userRef).pipe(
+            switchMap((u: any) => {
+              const hogarId = u?.hogarId;
+              if (!hogarId) return of(null);
+              
+              const hogarRef = doc(this.fs, `hogares/${hogarId}`);
+              return docData(hogarRef).pipe(
+                map(h => h ? { ...h, id: hogarId } : null)
+              );
+            })
+          );
+        })
+      );
+    });
+  }
+}
+```
+
+### Creating Documents
+
+```typescript src/app/core/hogar/services/hogar.service.ts
+async crearHogar(
+  nombre: string,
+  provincia: string,
+  user: User,
+  tipoHogar?: TipoHogar
+): Promise<{ id: string }> {
+  return await this.inCtxAsync(async () => {
+    // Create home document
+    const ref = await addDoc(collection(this.fs, 'hogares'), {
+      nombre: nombre.trim(),
+      ownerUid: user.uid,
+      miembros: [user.uid],
+      createdAt: serverTimestamp(),
+      tipoHogar: tipoHogar ?? 'Familiar',
+      zenPrime: false,
+    });
+
+    // Create member subcollection document
+    await setDoc(
+      doc(this.fs, `hogares/${ref.id}/miembros/${user.uid}`),
+      {
+        uid: user.uid,
+        email: user.email.toLowerCase(),
+        joinedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    // Update user document with hogarId
+    await setDoc(
+      doc(this.fs, `usuarios/${user.uid}`),
+      {
+        hogarId: ref.id,
+        actualizadoEn: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    return { id: ref.id };
+  });
+}
+```
+
+### Transactions
+
+For atomic operations (e.g., admin transfer):
+
+```typescript src/app/core/hogar/services/hogar.service.ts
+async transferirAdmin(hogarId: string, nuevoAdminUid: string): Promise<void> {
+  return await this.inCtxAsync(async () => {
+    const hogarRef = doc(this.fs, `hogares/${hogarId}`);
+    
+    await runTransaction(this.fs, async (tx) => {
+      const snap = await tx.get(hogarRef);
+      if (!snap.exists()) throw new Error('Hogar no encontrado');
+      
+      const data = snap.data();
+      const ownerUid = data.ownerUid || data.adminUid;
+      
+      // Validate current user is admin
+      if (ownerUid !== this.auth.currentUser?.uid) {
+        throw new Error('NOT_ADMIN');
+      }
+      
+      // Validate new admin is a member
+      const miembros = data.miembros ?? [];
+      if (!miembros.includes(nuevoAdminUid)) {
+        throw new Error('USER_NOT_MEMBER');
+      }
+      
+      // Update admin
+      tx.update(hogarRef, {
+        ownerUid: nuevoAdminUid,
+        adminUid: nuevoAdminUid,
+        actualizadoEn: serverTimestamp(),
+      });
+    });
+  });
+}
+```
+
+### Batch Operations
+
+For bulk deletions (e.g., deleting a home):
+
+```typescript src/app/core/hogar/services/hogar.service.ts
+// Delete all tasks for a home
+const tareasCol = collection(this.fs, 'tareas');
+const qy = query(tareasCol, where('hogarId', '==', hogarId));
+const tareasDocs = (await getDocs(qy)).docs;
+
+// Process in batches of 450 (Firestore limit is 500)
+for (let i = 0; i < tareasDocs.length; i += 450) {
+  const slice = tareasDocs.slice(i, i + 450);
+  const batch = writeBatch(this.fs);
+  
+  slice.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+}
+```
+
+## Firestore Data Converters
+
+Type-safe Firestore reads:
+
+```typescript src/app/core/hogar/services/hogar.service.ts
+const hogarConverter: FirestoreDataConverter<Hogar> = {
+  toFirestore: (hogar: Hogar): DocumentData => 
+    hogar as unknown as DocumentData,
+    
+  fromFirestore: (snap) => {
+    const d = snap.data();
+    return {
+      id: snap.id,
+      nombre: d.nombre,
+      countryCode: (d.countryCode ?? 'ES').toUpperCase(),
+      provincia: d.provincia,
+      provinciaCode: d.provinciaCode ?? '',
+      ownerUid: d.ownerUid ?? d.adminUid ?? '',
+      miembros: d.miembros ?? [],
+      createdAt: d.createdAt ?? null,
+      tipoHogar: d.tipoHogar,
+      zenPrime: d.zenPrime ?? false,
+    } as Hogar;
+  },
+};
+
+// Usage
+const hogarRef = doc(this.fs, `hogares/${hogarId}`)
+  .withConverter(hogarConverter);
+  
+const hogar = await getDoc(hogarRef); // Typed as Hogar
+```
+
+## Firebase Hosting Configuration
+
+```json firebase.json
+{
+  "hosting": {
+    "public": "dist/zenhogar/browser",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}
+```
+
+<Note>
+The rewrite rule ensures Angular's client-side routing works correctly on Firebase Hosting.
+</Note>
+
+### Firebase Project Configuration
+
+```json .firebaserc
+{
+  "projects": {
+    "default": "zenhogar"
+  }
+}
+```
+
+## Common Patterns
+
+### Pattern 1: Observable Firestore Data
+
+```typescript
+// ✅ Reactive approach - auto-updates UI
+hogar$ = this.hogarSvc.getHogar$();
+
+// In template
+<div *ngIf="hogar$ | async as hogar">
+  {{ hogar.nombre }}
+</div>
+```
+
+### Pattern 2: One-Time Reads
+
+```typescript
+// ✅ For actions that don't need reactivity
+this.hogarSvc.getHogar$()
+  .pipe(take(1))
+  .subscribe(hogar => {
+    console.log(hogar.nombre);
+  });
+```
+
+### Pattern 3: Combined Observables
+
+```typescript
+// ✅ Combine multiple data sources
+isAdmin$ = combineLatest([
+  this.authSvc.user$,
+  this.hogarSvc.getHogar$()
+]).pipe(
+  map(([user, hogar]) => 
+    !!user && !!hogar && user.uid === hogar.ownerUid
+  )
+);
+```
+
+## Security Considerations
+
+<Warning>
+**Firestore Security Rules are critical!** While not included in the codebase, ensure your Firebase project has proper security rules configured:
+
+```javascript
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users can only read/write their own document
+    match /usuarios/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    
+    // Home members can read, only admin can write
+    match /hogares/{hogarId} {
+      allow read: if request.auth != null && 
+        request.auth.uid in resource.data.miembros;
+      allow write: if request.auth != null && 
+        request.auth.uid == resource.data.ownerUid;
+    }
+    
+    // Tasks: home members can read/write
+    match /tareas/{tareaId} {
+      allow read, write: if request.auth != null && 
+        exists(/databases/$(database)/documents/hogares/$(resource.data.hogarId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/hogares/$(resource.data.hogarId)).data.miembros;
+    }
+  }
+}
+```
+</Warning>
+
+## Debugging Firebase
+
+### Enable Firestore Debug Logs
+
+```typescript src/main.ts
+import { setLogLevel } from 'firebase/firestore';
+import { isDevMode } from '@angular/core';
+
+if (isDevMode()) {
+  setLogLevel('debug'); // 'debug' | 'error' | 'silent'
+}
+```
+
+### Common Issues
+
+<AccordionGroup>
+  <Accordion title="Error: Missing or insufficient permissions">
+    **Cause:** Firestore security rules deny the operation.
+    
+    **Solution:** Check your Firebase Console → Firestore → Rules and ensure the authenticated user has access.
+  </Accordion>
+  
+  <Accordion title="Error: No injection context">
+    **Cause:** Firebase operations called outside Angular's injection context in zoneless mode.
+    
+    **Solution:** Wrap with `runInInjectionContext(this.injector, () => { ... })`
+  </Accordion>
+  
+  <Accordion title="Data not updating in UI">
+    **Cause:** Not using observables or missing `async` pipe.
+    
+    **Solution:** Use `docData()` for reactive updates and `| async` in templates.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Adding Features" icon="code" href="/guides/adding-features">
+    Learn how to add new features using Firebase
+  </Card>
+  
+  <Card title="Deployment" icon="rocket" href="/guides/deployment">
+    Deploy your Firebase-powered app
+  </Card>
+</CardGroup>

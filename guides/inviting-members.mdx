@@ -1,0 +1,401 @@
+---
+title: Inviting Members
+description: Learn how to invite people to join your household and manage member permissions
+---
+
+## Overview
+
+Inviting members to your household allows you to collaborate on task management. ZenHogar uses a secure email-based invitation system with unique codes.
+
+## Invitation Workflow
+
+<Steps>
+  <Step title="Open the Invite Dialog">
+    The household administrator or any member opens the invitation dialog by clicking the "Invite Member" button.
+    
+    The dialog (`DialogInvitarPersona`) displays:
+    - Email input field for the invitation
+    - Current household members list
+    - Admin transfer options (for administrators)
+  </Step>
+
+  <Step title="Enter Invitee Email">
+    Enter the email address of the person you want to invite:
+    
+    ```typescript
+    async enviar(f: NgForm) {
+      if (f.invalid || this.loading) return;
+      
+      this.loading = true;
+      try {
+        // Create invitation with unique code
+        const codigo = await this.invit.crearInvitacion(
+          this.hogarId,
+          this.email.trim(),
+        );
+        
+        const hogar = await firstValueFrom(this.hogarSvc.getHogar$());
+        const nombreHogar = hogar?.nombre || 'ZenHogar';
+        
+        // Send invitation email
+        await this.emailSvc.enviarInvitacion(
+          this.email.trim(),
+          nombreHogar,
+          codigo,
+        );
+        
+        this.snack.open('Invitación enviada ✔️', 'Cerrar', { duration: 4000 });
+      } catch (err) {
+        console.error(err);
+        this.snack.open('Error al enviar invitación 😕', 'Cerrar', {
+          duration: 5000,
+        });
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Generate Invitation Code">
+    The backend creates a unique invitation code and stores it in Firestore:
+    
+    ```typescript
+    async crearInvitacion(hogarId: string, email: string): Promise<string> {
+      // Generate 8-character unique code
+      const codigo = uuidv4().slice(0, 8);
+      
+      await setDoc(doc(this.fs, 'invitaciones', codigo), {
+        hogarId,
+        email: email.toLowerCase(),
+        codigo,
+        creadoEn: serverTimestamp(),
+        usado: false,
+        usadoPorUid: null,
+        usadoEn: null,
+      });
+      
+      return codigo;
+    }
+    ```
+    
+    The invitation document is stored with the code as the document ID for easy retrieval.
+  </Step>
+
+  <Step title="Email Sent to Invitee">
+    The system sends an email to the invitee containing:
+    - The household name
+    - The invitation code
+    - A link to join the household
+    - Instructions on how to use the code
+    
+    <Note>
+      The invitation email is personalized with the household name to help recipients identify which household they're being invited to.
+    </Note>
+  </Step>
+
+  <Step title="Invitee Validates Code">
+    When the invitee clicks the join link and enters the code, the system validates it:
+    
+    ```typescript
+    async validarCodigo(codigo: string): Promise<Invitacion | null> {
+      codigo = codigo.trim().toLowerCase();
+      const user = this.auth.currentUser;
+      if (!user?.email) throw new Error('Tu cuenta no tiene email');
+      
+      const invRef = doc(this.fs, 'invitaciones', codigo);
+      const snap = await getDoc(invRef);
+      if (!snap.exists()) return null;
+      
+      const inv = snap.data() as Invitacion;
+      
+      // Check if code is still valid
+      if (inv.usado) return null;
+      if ((inv.email ?? '').toLowerCase() !== user.email.toLowerCase())
+        return null;
+      
+      return { id: snap.id, ...inv };
+    }
+    ```
+    
+    <Warning>
+      Invitation codes are single-use and email-specific. The code can only be used by the person whose email was used to create the invitation.
+    </Warning>
+  </Step>
+
+  <Step title="Accept Invitation">
+    Once validated, the invitee accepts the invitation, which triggers multiple database operations:
+    
+    ```typescript
+    async aceptarCodigo(codigo: string): Promise<void> {
+      codigo = codigo.trim().toLowerCase();
+      const user = this.auth.currentUser;
+      if (!user) throw new Error('Debes iniciar sesión');
+      if (!user.email) throw new Error('Tu cuenta no tiene email');
+      
+      const email = user.email.toLowerCase();
+      const invit = await this.validarCodigo(codigo);
+      if (!invit) throw new Error('Código inválido o ya usado');
+      
+      const hogarId = invit.hogarId;
+      const invRef = doc(this.fs, 'invitaciones', invit.id!);
+      const userRef = doc(this.fs, 'usuarios', user.uid);
+      const memberRef = doc(this.fs, `hogares/${hogarId}/miembros/${user.uid}`);
+      const hogarRef = doc(this.fs, 'hogares', hogarId);
+      
+      // Use transaction to ensure atomicity
+      await runTransaction(this.fs, async (trx) => {
+        const userSnap = await trx.get(userRef);
+        const hogarIdActual = userSnap.exists()
+          ? (userSnap.data() as any)?.hogarId
+          : null;
+        
+        // Prevent joining if already in a household
+        if (
+          typeof hogarIdActual === 'string' &&
+          hogarIdActual.trim().length > 0
+        ) {
+          throw new Error('Ya perteneces a un hogar');
+        }
+        
+        // Create member document
+        trx.set(memberRef, {
+          uid: user.uid,
+          codigo,
+          email,
+          joinedAt: serverTimestamp(),
+        });
+        
+        // Mark invitation as used
+        trx.update(invRef, {
+          usado: true,
+          usadoPorUid: user.uid,
+          usadoEn: serverTimestamp(),
+        });
+        
+        // Update user with household reference
+        trx.set(
+          userRef,
+          {
+            hogarId,
+            totalTareasRealizadasHogar: 0,
+            actualizadoEn: serverTimestamp(),
+          },
+          { merge: true },
+        );
+      });
+      
+      // Add user to members array (outside transaction)
+      await updateDoc(hogarRef, {
+        miembros: arrayUnion(user.uid),
+        actualizadoEn: serverTimestamp(),
+      });
+    }
+    ```
+  </Step>
+
+  <Step title="New Member Joins">
+    After successful acceptance:
+    - The new member's user document is updated with the household ID
+    - They're added to the household's members array
+    - A member subdocument is created in the household
+    - The invitation code is marked as used
+    - The new member can now view and interact with household tasks
+  </Step>
+</Steps>
+
+## Data Model
+
+### Invitation Document
+
+```typescript
+export interface Invitacion {
+  id?: string;           // The invitation code (document ID)
+  hogarId: string;       // Target household ID
+  email: string;         // Invitee's email (lowercase)
+  codigo: string;        // The invitation code
+  creadoEn: Timestamp;   // Creation timestamp
+  usado: boolean;        // Whether code has been used
+  usadoPorUid?: string;  // UID of user who used the code
+  usadoEn?: Timestamp;   // When the code was used
+}
+```
+
+### Member Subdocument
+
+When a member joins, a subdocument is created at `/hogares/{hogarId}/miembros/{uid}`:
+
+```typescript
+{
+  uid: string;           // User ID
+  email: string;         // User's email
+  codigo: string;        // Invitation code used
+  joinedAt: Timestamp;   // When they joined
+}
+```
+
+## Security Features
+
+### Email Validation
+
+Invitation codes are tied to specific email addresses:
+
+```typescript
+if ((inv.email ?? '').toLowerCase() !== user.email.toLowerCase())
+  return null;
+```
+
+### Single-Use Codes
+
+Each code can only be used once:
+
+```typescript
+if (inv.usado) return null;
+```
+
+### Transaction Safety
+
+The acceptance process uses Firestore transactions to prevent race conditions:
+
+```typescript
+await runTransaction(this.fs, async (trx) => {
+  // Atomically check and update all documents
+});
+```
+
+<Note>
+  Using transactions ensures that if two users somehow try to use the same code simultaneously, only one will succeed.
+</Note>
+
+## Member Management
+
+### Viewing Members
+
+The invitation dialog also displays current household members:
+
+```typescript
+private async cargarMiembrosConPerfil(h: any): Promise<MiembroVM[]> {
+  const owner = (h?.ownerUid || h?.adminUid) ?? null;
+  const miUid = this.miUid;
+  
+  const uids: string[] = (Array.isArray(h?.miembros) ? h.miembros : [])
+    .map((m: any) => (typeof m === 'string' ? m : m?.uid))
+    .filter((x: any) => !!x);
+  
+  const perfiles = await Promise.all(
+    uids.map(async (uid) => {
+      const snap = await getDoc(doc(this.fs, `usuarios/${uid}`));
+      const u = snap.exists() ? (snap.data() as any) : null;
+      return {
+        uid,
+        nombre: u?.displayName ?? u?.nombre ?? null,
+        email: u?.email ?? null,
+        fotoURL: u?.photoURL ?? u?.fotoURL ?? null,
+        esAdmin: !!owner && uid === owner,
+        soyYo: !!miUid && uid === miUid,
+      } as MiembroVM;
+    }),
+  );
+  
+  // Sort with admin first
+  perfiles.sort((a, b) => Number(b.esAdmin) - Number(a.esAdmin));
+  return perfiles;
+}
+```
+
+### Transferring Admin Rights
+
+Administrators can transfer their admin role to another member:
+
+```typescript
+async transferirAdmin(hogarId: string, nuevoAdminUid: string): Promise<void> {
+  const user = this.auth.currentUser;
+  if (!user) throw new Error('Debes iniciar sesión');
+  
+  const hogarRef = doc(this.fs, `hogares/${hogarId}`);
+  const eventosCol = collection(this.fs, `hogares/${hogarId}/eventos`);
+  
+  await runTransaction(this.fs, async (tx) => {
+    const snap = await tx.get(hogarRef);
+    if (!snap.exists()) throw new Error('Hogar no encontrado');
+    
+    const d = snap.data() as any;
+    const ownerUid: string = d.ownerUid || d.adminUid || '';
+    
+    // Verify current user is admin
+    if (ownerUid !== user.uid) throw new Error('NOT_ADMIN');
+    
+    // Verify target is a member
+    const miembros: any[] = Array.isArray(d.miembros) ? d.miembros : [];
+    const esMiembroDestino = miembros.some((m) =>
+      typeof m === 'string' ? m === nuevoAdminUid : m?.uid === nuevoAdminUid,
+    );
+    if (!esMiembroDestino) throw new Error('USER_NOT_MEMBER');
+    
+    // Transfer ownership
+    tx.update(hogarRef, {
+      ownerUid: nuevoAdminUid,
+      adminUid: nuevoAdminUid,
+      actualizadoEn: serverTimestamp(),
+    });
+    
+    // Log the transfer event
+    const eventoRef = doc(eventosCol);
+    tx.set(eventoRef, {
+      tipo: 'TRANSFER_ADMIN',
+      de: user.uid,
+      a: nuevoAdminUid,
+      ts: serverTimestamp(),
+    });
+  });
+}
+```
+
+<Warning>
+  When transferring admin rights, the current admin loses all administrative privileges. This action cannot be undone unless the new admin transfers the role back.
+</Warning>
+
+## Leaving a Household
+
+Members can leave a household at any time:
+
+```typescript
+// src/app/core/hogar/services/hogar.service.ts:274
+async salirDeHogar(hogarId: string): Promise<void> {
+  const user = this.auth.currentUser;
+  if (!user) throw new Error('Debes iniciar sesión');
+  
+  const uid = user.uid;
+  const hogarRef = doc(this.fs, `hogares/${hogarId}`);
+  const preSnap = await getDoc(hogarRef);
+  
+  if (!preSnap.exists()) throw new Error('Hogar no encontrado');
+  
+  const d = preSnap.data() as any;
+  const ownerUid: string = d.ownerUid || d.adminUid;
+  
+  // Admins must transfer ownership first
+  if (ownerUid === uid) throw new Error('ADMIN_MUST_TRANSFER');
+  
+  // Clean up user's tasks and assignments
+  await this.tareasSvc.liberarTareasDeUsuarioQueSale(hogarId, uid);
+  await this.tareasSvc.cancelarPeticionesPendientesDeUsuarioQueSale(hogarId, uid);
+  await this.tareasSvc.limpiarValoracionesPendientesDeUsuarioQueSale(hogarId, uid);
+  
+  // Remove from household
+  await runTransaction(this.fs, async (tx) => {
+    tx.update(hogarRef, {
+      miembros: arrayRemove(uid),
+      actualizadoEn: serverTimestamp(),
+    });
+  });
+}
+```
+
+<Tip>
+  Administrators cannot leave a household without first transferring admin rights to another member or deleting the household entirely.
+</Tip>
+
+## Related Workflows
+
+- [Creating a Household](/guides/creating-household) - Set up your household
+- [Task Assignment](/guides/task-assignment) - Assign tasks to new members
+- [Managing Tasks](/guides/managing-tasks) - Create tasks for your household
