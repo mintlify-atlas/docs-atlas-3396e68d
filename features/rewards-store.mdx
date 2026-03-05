@@ -1,0 +1,289 @@
+---
+title: Rewards Store
+description: Redeem earned points for household rewards and perks
+icon: store
+---
+
+## Overview
+
+The Rewards Store (`TiendaService` at `src/app/core/tienda/services/tienda.service.ts:16`) allows household members to spend their earned points on rewards. This gamification feature motivates task completion by providing tangible benefits.
+
+## Types of Rewards
+
+ZenHogar supports two types of rewards:
+
+<CardGroup cols={2}>
+  <Card title="Predefined Rewards" icon="list">
+    System-provided rewards available to all households
+  </Card>
+  <Card title="Custom Rewards" icon="wand-magic-sparkles">
+    Household-specific rewards created by admins
+  </Card>
+</CardGroup>
+
+### Reward Model
+
+```typescript
+export type TipoRecompensa = 'predefinida' | 'personalizada';
+
+export interface Recompensa {
+  id: string;
+  titulo: string;
+  descripcion: string;
+  coste: number;              // Points required to redeem
+  icono: string;              // Icon identifier for display
+  tipo: TipoRecompensa;       // Type of reward
+  soloZenPrime?: boolean;     // Requires ZenPrime subscription
+  badge?: 'popular' | 'top';  // Display badge for featured rewards
+}
+```
+
+## Redeeming Rewards
+
+### Redemption Process
+
+When a user redeems a reward, the system:
+
+<Steps>
+  <Step title="Verify Sufficient Points">
+    Check that the user has enough points to afford the reward
+  </Step>
+  
+  <Step title="Deduct Points">
+    Subtract the reward cost from the user's point balance atomically
+  </Step>
+  
+  <Step title="Record Redemption">
+    Save the redemption in the user's history for tracking
+  </Step>
+  
+  <Step title="Send Notification">
+    Create a notification for other household members about the redemption
+  </Step>
+</Steps>
+
+### Implementation
+
+The `canjearRecompensa()` method uses a Firestore transaction to ensure atomicity:
+
+```typescript
+async canjearRecompensa(
+  usuarioId: string,
+  puntosGastados: number,
+  recompensa: Recompensa
+): Promise<void> {
+  const usuarioRef = doc(this.fs, `usuarios/${usuarioId}`);
+  const canjeosRef = collection(this.fs, `usuarios/${usuarioId}/canjeos`);
+
+  return runTransaction(this.fs, async (tx) => {
+    const snap = await tx.get(usuarioRef);
+    if (!snap.exists()) {
+      throw new Error('Usuario no encontrado');
+    }
+
+    const datos = snap.data() as any;
+    const puntosActuales = datos.puntos ?? 0;
+
+    if (puntosActuales < puntosGastados) {
+      throw new Error('No tienes suficientes puntos');
+    }
+
+    // Deduct points
+    tx.update(usuarioRef, {
+      puntos: puntosActuales - puntosGastados
+    });
+
+    // Save redemption history
+    const canjeoRef = doc(canjeosRef);
+    tx.set(canjeoRef, {
+      recompensaId: recompensa.id,
+      titulo: recompensa.titulo,
+      puntosGastados,
+      tipo: recompensa.tipo,
+      fecha: new Date()
+    });
+  });
+}
+```
+
+<Note>
+  The transaction ensures that either both operations succeed (point deduction and history recording) or both fail, preventing inconsistent state.
+</Note>
+
+## Custom Rewards
+
+### Creating Custom Rewards
+
+Household admins can create custom rewards tailored to their household:
+
+```typescript
+async crearRecompensaPersonalizada(hogarId: string, data: any): Promise<any> {
+  const colRef = collection(this.fs, `hogares/${hogarId}/recompensasPersonalizadas`);
+  const docRef = doc(colRef);
+  const toSave = { ...data, id: docRef.id };
+
+  return setDoc(docRef, toSave).then(() => toSave);
+}
+```
+
+**Example custom rewards:**
+- Skip your next assigned task
+- Choose next week's meal plan
+- Veto one household decision
+- Priority bathroom access
+- Sleep in on Saturday
+
+### Viewing Custom Rewards
+
+Retrieve household-specific rewards as a real-time observable:
+
+```typescript
+getRecompensasPersonalizadas(hogarId: string): Observable<Recompensa[]> {
+  const ref = collection(this.fs, `hogares/${hogarId}/recompensasPersonalizadas`);
+  return collectionData(ref, { idField: 'id' }) as Observable<Recompensa[]>;
+}
+```
+
+### Managing Custom Rewards
+
+Admins can update or delete custom rewards:
+
+```typescript
+// Update a reward
+async actualizarRecompensaPersonalizada(
+  hogarId: string,
+  recompensaId: string,
+  changes: any
+): Promise<void> {
+  const ref = doc(this.fs, `hogares/${hogarId}/recompensasPersonalizadas/${recompensaId}`);
+  await updateDoc(ref, changes);
+}
+
+// Delete a reward
+async borrarRecompensaPersonalizada(
+  hogarId: string, 
+  recompensaId: string
+): Promise<void> {
+  const ref = doc(this.fs, `hogares/${hogarId}/recompensasPersonalizadas/${recompensaId}`);
+  await deleteDoc(ref);
+}
+```
+
+## Redemption History
+
+### Canjeo Model
+
+Each redemption is stored in the user's subcollection:
+
+```typescript
+export interface Canjeo {
+  id: string;
+  recompensaId: string;      // Original reward ID
+  titulo: string;             // Reward title (snapshot)
+  puntosGastados: number;     // Points spent
+  fecha: Date;                // Redemption timestamp
+  tipo: 'predefinida' | 'personalizada';
+}
+```
+
+### Accessing History
+
+Redemption history is stored in:
+```
+usuarios/{userId}/canjeos/{canjeoId}
+```
+
+This allows users to track their spending history and admins to monitor household reward activity.
+
+## ZenPrime Exclusive Rewards
+
+Some rewards are only available to households with ZenPrime subscription:
+
+```typescript
+interface Recompensa {
+  // ...
+  soloZenPrime?: boolean;  // If true, requires ZenPrime
+}
+```
+
+<Warning>
+  Non-premium households will see these rewards grayed out and cannot redeem them.
+</Warning>
+
+## Integration with Notifications
+
+When a user redeems a reward, a notification is created in the household feed:
+
+```typescript
+await notificacionesService.crearNotificacionCanje(
+  hogarId,
+  usuarioId,
+  recompensa.titulo,
+  puntosGastados
+);
+```
+
+This keeps all household members informed about reward redemptions. See [Notifications](/features/notifications) for details.
+
+## UI Dialog Data
+
+The store UI receives configuration through the `DialogTiendaData` interface:
+
+```typescript
+export interface DialogTiendaData {
+  puntosDisponibles: number;           // User's current point balance
+  esZenPrime: boolean;                 // Is household premium?
+  usuarioUid?: string;                 // Current user ID
+  hogarId?: string;                    // Current household ID
+  esAdmin?: boolean;                   // Is user household admin?
+  esDemo?: boolean;                    // Is demo mode active?
+  recompensasPersonalizadas?: Recompensa[];  // Custom rewards
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Set Appropriate Costs">
+    Balance reward costs with typical point earnings. If tasks award 5-10 points on average, a reward costing 500 points might take months to earn.
+  </Accordion>
+  
+  <Accordion title="Make Rewards Meaningful">
+    Custom rewards should be genuinely desirable to household members. Survey your household about what they'd actually want.
+  </Accordion>
+  
+  <Accordion title="Update Rewards Regularly">
+    Refresh custom rewards periodically to maintain interest. Seasonal rewards (summer: ice cream choice, winter: thermostat control) work well.
+  </Accordion>
+  
+  <Accordion title="Track Redemption Patterns">
+    Monitor which rewards are popular and adjust costs or add similar options.
+  </Accordion>
+</AccordionGroup>
+
+## Error Handling
+
+Common errors when redeeming rewards:
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `Usuario no encontrado` | User doesn't exist | Ensure user is logged in |
+| `No tienes suficientes puntos` | Insufficient point balance | Earn more points or choose cheaper reward |
+| Transaction failed | Concurrent redemption | Retry the operation |
+
+## Related Features
+
+<CardGroup cols={2}>
+  <Card title="Points System" icon="trophy" href="/features/points-system">
+    Learn how points are earned
+  </Card>
+  <Card title="Notifications" icon="bell" href="/features/notifications">
+    View redemption notifications
+  </Card>
+  <Card title="TiendaService API" icon="code" href="/api/tienda-service">
+    Complete API reference
+  </Card>
+  <Card title="Task Completion" icon="list-check" href="/features/tasks">
+    Complete tasks to earn points
+  </Card>
+</CardGroup>

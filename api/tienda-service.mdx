@@ -1,0 +1,348 @@
+---
+title: TiendaService
+description: Rewards store and point redemption service
+icon: store
+---
+
+## Overview
+
+The `TiendaService` manages the rewards store where users can redeem earned points for household rewards. It handles both predefined system rewards and custom household-specific rewards.
+
+**Location**: `src/app/core/tienda/services/tienda.service.ts:16`
+
+## Methods
+
+### canjearRecompensa()
+
+Redeem a reward by spending points. Uses a Firestore transaction to ensure atomic point deduction and history recording.
+
+```typescript
+async canjearRecompensa(
+  usuarioId: string,
+  puntosGastados: number,
+  recompensa: Recompensa
+): Promise<void>
+```
+
+<ParamField path="usuarioId" type="string" required>
+  The UID of the user redeeming the reward
+</ParamField>
+
+<ParamField path="puntosGastados" type="number" required>
+  The number of points to spend (should match `recompensa.coste`)
+</ParamField>
+
+<ParamField path="recompensa" type="Recompensa" required>
+  The reward object being redeemed
+</ParamField>
+
+**Returns**: Promise that resolves when redemption is complete
+
+**Throws**:
+- `'Usuario no encontrado'` - User document doesn't exist
+- `'No tienes suficientes puntos'` - Insufficient point balance
+
+**Example**:
+
+```typescript
+const recompensa: Recompensa = {
+  id: 'reward-123',
+  titulo: 'Skip Next Task',
+  descripcion: 'Skip your next assigned household task',
+  coste: 50,
+  icono: 'skip-forward',
+  tipo: 'personalizada'
+};
+
+await tiendaService.canjearRecompensa(
+  'user-abc',
+  50,
+  recompensa
+);
+
+console.log('Reward redeemed! 50 points deducted.');
+```
+
+**Implementation Details**:
+
+The method performs these operations atomically in a transaction:
+
+1. Fetches user document to get current point balance
+2. Validates sufficient points are available
+3. Updates user's `puntos` field (deducting the cost)
+4. Creates a `Canjeo` document in `usuarios/{uid}/canjeos/`
+
+<Note>
+  The transaction ensures consistency. If the point deduction succeeds but history recording fails (or vice versa), the entire operation is rolled back.
+</Note>
+
+---
+
+### getRecompensasPersonalizadas()
+
+Retrieve all custom rewards created for a household as a real-time observable.
+
+```typescript
+getRecompensasPersonalizadas(hogarId: string): Observable<Recompensa[]>
+```
+
+<ParamField path="hogarId" type="string" required>
+  The ID of the household
+</ParamField>
+
+**Returns**: Observable that emits the current list of custom rewards whenever it changes
+
+**Example**:
+
+```typescript
+tiendaService.getRecompensasPersonalizadas('hogar-xyz')
+  .subscribe(rewards => {
+    console.log(`Found ${rewards.length} custom rewards`);
+    rewards.forEach(r => {
+      console.log(`- ${r.titulo}: ${r.coste} points`);
+    });
+  });
+```
+
+**Firestore Path**: `hogares/{hogarId}/recompensasPersonalizadas/`
+
+---
+
+### crearRecompensaPersonalizada()
+
+Create a new custom reward for a household. Typically called by household admins.
+
+```typescript
+async crearRecompensaPersonalizada(
+  hogarId: string,
+  data: any
+): Promise<any>
+```
+
+<ParamField path="hogarId" type="string" required>
+  The ID of the household
+</ParamField>
+
+<ParamField path="data" type="Partial<Recompensa>" required>
+  The reward data. Should include `titulo`, `descripcion`, `coste`, `icono`, and `tipo: 'personalizada'`
+</ParamField>
+
+**Returns**: Promise that resolves with the created reward (including generated `id`)
+
+**Example**:
+
+```typescript
+const newReward = await tiendaService.crearRecompensaPersonalizada('hogar-xyz', {
+  titulo: 'Choose Movie Night',
+  descripcion: 'Pick the movie for Friday night',
+  coste: 30,
+  icono: 'film',
+  tipo: 'personalizada'
+});
+
+console.log('Created reward:', newReward.id);
+```
+
+<Tip>
+  The service automatically generates a unique ID for the reward and includes it in the returned object.
+</Tip>
+
+---
+
+### actualizarRecompensaPersonalizada()
+
+Update an existing custom reward's properties.
+
+```typescript
+async actualizarRecompensaPersonalizada(
+  hogarId: string,
+  recompensaId: string,
+  changes: any
+): Promise<void>
+```
+
+<ParamField path="hogarId" type="string" required>
+  The ID of the household
+</ParamField>
+
+<ParamField path="recompensaId" type="string" required>
+  The ID of the reward to update
+</ParamField>
+
+<ParamField path="changes" type="Partial<Recompensa>" required>
+  Object containing the fields to update
+</ParamField>
+
+**Returns**: Promise that resolves when update is complete
+
+**Example**:
+
+```typescript
+await tiendaService.actualizarRecompensaPersonalizada(
+  'hogar-xyz',
+  'reward-123',
+  {
+    coste: 40,  // Increase cost from 30 to 40
+    descripcion: 'Pick the movie for ANY night this week'
+  }
+);
+```
+
+---
+
+### borrarRecompensaPersonalizada()
+
+Delete a custom reward from the household.
+
+```typescript
+async borrarRecompensaPersonalizada(
+  hogarId: string,
+  recompensaId: string
+): Promise<void>
+```
+
+<ParamField path="hogarId" type="string" required>
+  The ID of the household
+</ParamField>
+
+<ParamField path="recompensaId" type="string" required>
+  The ID of the reward to delete
+</ParamField>
+
+**Returns**: Promise that resolves when deletion is complete
+
+**Example**:
+
+```typescript
+await tiendaService.borrarRecompensaPersonalizada('hogar-xyz', 'reward-123');
+console.log('Reward deleted');
+```
+
+<Warning>
+  Deleting a reward does NOT affect redemption history. Users who previously redeemed this reward will still have it in their `canjeos` collection.
+</Warning>
+
+---
+
+## Related Types
+
+### Recompensa
+
+```typescript
+export type TipoRecompensa = 'predefinida' | 'personalizada';
+
+export interface Recompensa {
+  id: string;
+  titulo: string;
+  descripcion: string;
+  coste: number;
+  icono: string;
+  tipo: TipoRecompensa;
+  soloZenPrime?: boolean;
+  badge?: 'popular' | 'top';
+}
+```
+
+See [Recompensa Model](/api/models/recompensa) for detailed field documentation.
+
+### Canjeo
+
+```typescript
+export interface Canjeo {
+  id: string;
+  recompensaId: string;
+  titulo: string;
+  puntosGastados: number;
+  fecha: Date;
+  tipo: 'predefinida' | 'personalizada';
+}
+```
+
+See [Canjeo Model](/api/models/canjeo) for detailed field documentation.
+
+### DialogTiendaData
+
+```typescript
+export interface DialogTiendaData {
+  puntosDisponibles: number;
+  esZenPrime: boolean;
+  usuarioUid?: string;
+  hogarId?: string;
+  esAdmin?: boolean;
+  esDemo?: boolean;
+  recompensasPersonalizadas?: Recompensa[];
+}
+```
+
+Configuration data passed to the rewards store UI dialog.
+
+---
+
+## Usage Example
+
+Complete workflow for managing and redeeming rewards:
+
+```typescript
+import { TiendaService } from './core/tienda/services/tienda.service';
+import { Component, inject } from '@angular/core';
+
+@Component({...})
+export class RewardsComponent {
+  private tiendaService = inject(TiendaService);
+  
+  customRewards$ = this.tiendaService
+    .getRecompensasPersonalizadas('hogar-123');
+  
+  async createReward() {
+    const reward = await this.tiendaService.crearRecompensaPersonalizada(
+      'hogar-123',
+      {
+        titulo: 'Extra Sleep Hour',
+        descripcion: 'Sleep in one extra hour on Sunday',
+        coste: 25,
+        icono: 'bed',
+        tipo: 'personalizada'
+      }
+    );
+    console.log('Created:', reward.id);
+  }
+  
+  async redeemReward(reward: Recompensa, userPoints: number) {
+    if (userPoints < reward.coste) {
+      alert('Not enough points!');
+      return;
+    }
+    
+    try {
+      await this.tiendaService.canjearRecompensa(
+        'user-abc',
+        reward.coste,
+        reward
+      );
+      alert(`Redeemed: ${reward.titulo}`);
+    } catch (error) {
+      console.error('Redemption failed:', error);
+      alert(error.message);
+    }
+  }
+}
+```
+
+---
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Rewards Store Feature" icon="store" href="/features/rewards-store">
+    User-facing rewards feature guide
+  </Card>
+  <Card title="Points System" icon="trophy" href="/features/points-system">
+    How points are earned and tracked
+  </Card>
+  <Card title="Recompensa Model" icon="gift" href="/api/models/recompensa">
+    Reward data structure
+  </Card>
+  <Card title="Canjeo Model" icon="receipt" href="/api/models/canjeo">
+    Redemption history structure
+  </Card>
+</CardGroup>

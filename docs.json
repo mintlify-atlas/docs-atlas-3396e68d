@@ -40,7 +40,8 @@
               "features/tasks",
               "features/invitations",
               "features/notifications",
-              "features/points-system"
+              "features/points-system",
+              "features/rewards-store"
             ]
           },
           {
@@ -63,7 +64,8 @@
               "api/hogar-service",
               "api/tareas-service",
               "api/invitaciones-service",
-              "api/notificaciones-service"
+              "api/notificaciones-service",
+              "api/tienda-service"
             ]
           },
           {
@@ -73,7 +75,9 @@
               "api/models/tarea",
               "api/models/usuario",
               "api/models/invitacion",
-              "api/models/notificacion"
+              "api/models/notificacion",
+              "api/models/recompensa",
+              "api/models/canjeo"
             ]
           }
         ]

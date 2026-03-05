@@ -1,0 +1,248 @@
+---
+title: Recompensa
+description: Reward model for the store system
+icon: gift
+---
+
+## Overview
+
+The `Recompensa` interface represents a reward that users can redeem with their earned points. Rewards can be system-provided (predefined) or household-specific (custom).
+
+**Location**: `src/app/core/tienda/models/tienda.model.ts:3`
+
+## Type Definition
+
+```typescript
+export type TipoRecompensa = 'predefinida' | 'personalizada';
+
+export interface Recompensa {
+  id: string;
+  titulo: string;
+  descripcion: string;
+  coste: number;
+  icono: string;
+  tipo: TipoRecompensa;
+  soloZenPrime?: boolean;
+  badge?: 'popular' | 'top';
+}
+```
+
+## Fields
+
+<ResponseField name="id" type="string" required>
+  Unique identifier for the reward. Auto-generated when created.
+</ResponseField>
+
+<ResponseField name="titulo" type="string" required>
+  Display name of the reward (e.g., "Skip Next Task", "Movie Night Choice")
+</ResponseField>
+
+<ResponseField name="descripcion" type="string" required>
+  Detailed description explaining what the reward provides
+</ResponseField>
+
+<ResponseField name="coste" type="number" required>
+  Number of points required to redeem this reward. Must be positive.
+</ResponseField>
+
+<ResponseField name="icono" type="string" required>
+  Icon identifier used for UI display. Can be a Material Icon name or custom icon key.
+</ResponseField>
+
+<ResponseField name="tipo" type="TipoRecompensa" required>
+  Type of reward:
+  - `'predefinida'` - System-provided reward available to all households
+  - `'personalizada'` - Custom reward created by household admin
+</ResponseField>
+
+<ResponseField name="soloZenPrime" type="boolean">
+  If `true`, this reward is only available to households with ZenPrime subscription. Non-premium households cannot redeem these rewards.
+</ResponseField>
+
+<ResponseField name="badge" type="'popular' | 'top'">
+  Optional badge to display on the reward card:
+  - `'popular'` - Indicates frequently redeemed reward
+  - `'top'` - Indicates featured/recommended reward
+</ResponseField>
+
+## Example
+
+### Predefined Reward
+
+```json
+{
+  "id": "reward-001",
+  "titulo": "Skip Next Task",
+  "descripcion": "Automatically skip your next assigned household task",
+  "coste": 50,
+  "icono": "skip-forward",
+  "tipo": "predefinida",
+  "soloZenPrime": false,
+  "badge": "popular"
+}
+```
+
+### Custom Household Reward
+
+```json
+{
+  "id": "hogar123-reward-custom-001",
+  "titulo": "Choose Dinner Menu",
+  "descripcion": "Pick what we're having for dinner this Sunday",
+  "coste": 30,
+  "icono": "restaurant",
+  "tipo": "personalizada",
+  "soloZenPrime": false
+}
+```
+
+### ZenPrime Exclusive Reward
+
+```json
+{
+  "id": "reward-premium-001",
+  "titulo": "Household Veto Power",
+  "descripcion": "Veto one household decision this month",
+  "coste": 100,
+  "icono": "gavel",
+  "tipo": "predefinida",
+  "soloZenPrime": true,
+  "badge": "top"
+}
+```
+
+## Usage in TypeScript
+
+### Creating a Custom Reward
+
+```typescript
+import { TiendaService } from './core/tienda/services/tienda.service';
+
+const newReward: Partial<Recompensa> = {
+  titulo: 'Music Control',
+  descripcion: 'Control the household music playlist for one week',
+  coste: 40,
+  icono: 'music-note',
+  tipo: 'personalizada'
+};
+
+const created = await tiendaService.crearRecompensaPersonalizada(
+  'hogar-xyz',
+  newReward
+);
+
+console.log('Created reward:', created.id);
+```
+
+### Displaying Rewards
+
+```typescript
+import { Recompensa } from './core/tienda/models/tienda.model';
+
+function displayReward(reward: Recompensa, userPoints: number) {
+  console.log(`${reward.titulo} - ${reward.coste} points`);
+  
+  if (reward.soloZenPrime && !userHasPremium) {
+    console.log('🔒 Requires ZenPrime');
+    return;
+  }
+  
+  if (userPoints < reward.coste) {
+    console.log('❌ Insufficient points');
+  } else {
+    console.log('✅ Available to redeem');
+  }
+  
+  if (reward.badge) {
+    console.log(`⭐ ${reward.badge.toUpperCase()}`);
+  }
+}
+```
+
+## Firestore Storage
+
+### Predefined Rewards
+
+Predefined rewards are stored in the application code and displayed dynamically. They are not stored in Firestore.
+
+### Custom Rewards
+
+Custom rewards are stored per-household:
+
+**Collection Path**: `hogares/{hogarId}/recompensasPersonalizadas/{recompensaId}`
+
+**Security Rules** (recommended):
+
+```javascript
+match /hogares/{hogarId}/recompensasPersonalizadas/{recompensaId} {
+  // Allow household members to read
+  allow read: if isHouseholdMember(hogarId);
+  
+  // Only admins can create/update/delete
+  allow write: if isHouseholdAdmin(hogarId);
+}
+```
+
+## Validation
+
+When creating or updating rewards, validate:
+
+<AccordionGroup>
+  <Accordion title="Titulo Validation">
+    - Must not be empty
+    - Maximum length: 50 characters
+    - Should be descriptive and clear
+  </Accordion>
+  
+  <Accordion title="Coste Validation">
+    - Must be a positive integer
+    - Recommended range: 10-200 points
+    - Should be balanced with typical point earnings
+  </Accordion>
+  
+  <Accordion title="Descripcion Validation">
+    - Must not be empty
+    - Maximum length: 200 characters
+    - Should clearly explain what the reward provides
+  </Accordion>
+  
+  <Accordion title="Tipo Validation">
+    - Must be exactly `'predefinida'` or `'personalizada'`
+    - Cannot change after creation
+  </Accordion>
+</AccordionGroup>
+
+## Related Types
+
+### DialogTiendaData
+
+Configuration passed to the rewards store UI:
+
+```typescript
+export interface DialogTiendaData {
+  puntosDisponibles: number;           // User's current points
+  esZenPrime: boolean;                 // Household premium status
+  usuarioUid?: string;
+  hogarId?: string;
+  esAdmin?: boolean;                   // Can create/edit rewards
+  esDemo?: boolean;                    // Demo mode flag
+  recompensasPersonalizadas?: Recompensa[];  // Custom rewards
+}
+```
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="TiendaService API" icon="code" href="/api/tienda-service">
+    Service methods for managing rewards
+  </Card>
+  <Card title="Canjeo Model" icon="receipt" href="/api/models/canjeo">
+    Redemption history model
+  </Card>
+  <Card title="Rewards Store Feature" icon="store" href="/features/rewards-store">
+    User-facing rewards documentation
+  </Card>
+  <Card title="Points System" icon="trophy" href="/features/points-system">
+    How points are earned
+  </Card>
+</CardGroup>
