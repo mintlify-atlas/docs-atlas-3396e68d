@@ -1,0 +1,124 @@
+{
+  "projectType": "saas",
+  "projectName": "ZenHogar",
+  "projectDescription": "A collaborative household task management platform for roommates, families, and shared living spaces",
+  "theme": "almond",
+  "primaryColor": "#2196F3",
+  "lightColor": "#64B5F6",
+  "darkColor": "#1976D2",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/authentication",
+              "features/households",
+              "features/tasks",
+              "features/invitations",
+              "features/notifications",
+              "features/points-system"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/firebase-setup",
+              "configuration/emailjs-setup",
+              "configuration/environment"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Services",
+            "pages": [
+              "api/auth-service",
+              "api/hogar-service",
+              "api/tareas-service",
+              "api/invitaciones-service",
+              "api/notificaciones-service"
+            ]
+          },
+          {
+            "group": "Models",
+            "pages": [
+              "api/models/hogar",
+              "api/models/tarea",
+              "api/models/usuario",
+              "api/models/invitacion",
+              "api/models/notificacion"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "User Workflows",
+            "pages": [
+              "guides/creating-household",
+              "guides/inviting-members",
+              "guides/managing-tasks",
+              "guides/task-assignment",
+              "guides/task-rating"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "guides/project-structure",
+              "guides/firebase-integration",
+              "guides/adding-features",
+              "guides/deployment"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Google Authentication with Firebase",
+    "Multi-household support with member management",
+    "Task creation, assignment, and completion tracking",
+    "Points-based rating system for completed tasks",
+    "Email-based invitation system with access codes",
+    "Real-time notifications and activity tracking",
+    "Task request and approval workflows",
+    "Historical tracking of task completions",
+    "Admin controls for household management"
+  ],
+  "publicApiSurface": [
+    "AuthService.loginGoogle()",
+    "AuthService.logout()",
+    "AuthService.user$",
+    "AuthService.usuarioCompleto$",
+    "HogarService.crearHogar()",
+    "HogarService.getHogarState$()",
+    "HogarService.salirDeHogar()",
+    "HogarService.transferirAdmin()",
+    "HogarService.eliminarHogar()",
+    "TareasService.getTareasPorHogar()",
+    "TareasService.crearTarea()",
+    "TareasService.asignarTarea()",
+    "TareasService.valorarTarea()",
+    "TareasService.crearPeticionAsignacion()",
+    "TareasService.aceptarPeticion()",
+    "TareasService.rechazarPeticion()",
+    "TareasService.getPuntosSemana()"
+  ]
+}
